@@ -616,7 +616,15 @@
       authorInfo.append(meta);
       authorRow.append(authorInfo);
       card.append(authorRow);
-      if (safeImage) card.append(el("img", { className: "bdf-cover", src: safeImage, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }));
+      if (safeImage) {
+        card.append(el("img", {
+          className: item.isVideo ? "bdf-cover bdf-video-cover" : "bdf-cover",
+          src: safeImage,
+          alt: "",
+          loading: "lazy",
+          referrerpolicy: "no-referrer"
+        }));
+      }
       const validTitle = item.title && !/^(?:MAJOR|DYNAMIC|ADDITIONAL|MODULE)_TYPE_[A-Z0-9_]+$/.test(item.title);
       const validPreview = item.preview && !/^(?:MAJOR|DYNAMIC|ADDITIONAL|MODULE)_TYPE_[A-Z0-9_]+$/.test(item.preview);
       const displayTitle = validTitle && item.title !== "无标题动态"
