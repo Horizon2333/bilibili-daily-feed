@@ -370,6 +370,10 @@
       major.jump_url
     ));
     const isVideo = raw.type === "DYNAMIC_TYPE_AV" || major.type === "MAJOR_TYPE_ARCHIVE" || Boolean(archive.bvid);
+    const videoMeta = globalThis.BiliDailyVideoMeta.extractApiVideoMeta(
+      archive,
+      dynamicModule.additional && dynamicModule.additional.ugc
+    );
     const published = new Date(pubTimestamp);
 
     return {
@@ -384,6 +388,8 @@
       dynamicHref: `https://www.bilibili.com/opus/${raw.id_str}`,
       contentHref,
       isVideo,
+      durationText: videoMeta.durationText,
+      chargeLabel: videoMeta.chargeLabel,
       pubTimestamp
     };
   }
@@ -543,13 +549,23 @@
     const preview = contentPreview(contentText, 320);
     const image = findImage(contentRoot);
     const isVideo = Boolean(videoLink) || /投稿了视频|发布了动态视频|联合创作/.test(cardText);
+    const videoRoot = videoLink?.closest(".bili-dyn-card-video, .bili-video-card, [class*='video']") || contentRoot;
+    const durationText = Array.from(videoRoot.querySelectorAll(
+      ".bili-dyn-card-video__duration, .bili-video-card__stats__duration, .duration-time, [class*='duration']"
+    )).map((node) => globalThis.BiliDailyVideoMeta.normalizeDuration(node.textContent)).find(Boolean) || "";
+    const chargeLabel = Array.from(videoRoot.querySelectorAll(
+      ".bili-dyn-card-video__badge, .bili-dyn-card-video__tag, [class*='badge'], [class*='tag']"
+    )).map((node) => globalThis.BiliDailyVideoMeta.normalizeBadgeText(node.textContent)).find(Boolean) || "";
     const contentHref = absoluteUrl((videoLink || contentLinks.find((link) => {
       const href = absoluteUrl(link.getAttribute("href"));
       return href && href !== dynamicHref && !/space\.bilibili\.com/.test(href);
     }))?.getAttribute("href"));
     const linkFingerprint = contentLinks.map((link) => absoluteUrl(link.getAttribute("href"))).filter(Boolean).join("|");
     const key = dynamicId || dynamicHref || fingerprint(`${formatDay(parsed)}|${timeText}|${author}|${contentText}|${image}|${linkFingerprint}`);
-    return { key, day: formatDay(parsed), timeText, author, avatar, title, preview, image, dynamicHref, contentHref, isVideo };
+    return {
+      key, day: formatDay(parsed), timeText, author, avatar, title, preview, image,
+      dynamicHref, contentHref, isVideo, durationText, chargeLabel
+    };
   }
 
   function collectVisibleCards(root) {
@@ -592,7 +608,10 @@
       if (safeAvatar) authorRow.append(el("img", { className: "bdf-avatar", src: safeAvatar, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }));
       const authorInfo = el("div", { className: "bdf-author-info" });
       authorInfo.append(el("div", { className: "bdf-author", text: item.author || "未知账号" }));
-      authorInfo.append(el("div", { className: "bdf-meta", text: `${item.timeText}${item.isVideo ? " · 视频" : ""}` }));
+      const metaParts = [item.timeText];
+      if (item.isVideo) metaParts.push("视频");
+      if (item.durationText) metaParts.push(item.durationText);
+      authorInfo.append(el("div", { className: "bdf-meta", text: metaParts.filter(Boolean).join(" · ") }));
       authorRow.append(authorInfo);
       card.append(authorRow);
       if (safeImage) card.append(el("img", { className: "bdf-cover", src: safeImage, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }));
@@ -601,7 +620,10 @@
       const displayTitle = validTitle && item.title !== "无标题动态"
         ? item.title
         : firstText(validPreview ? item.preview.split(/\n\s*\n|\n/)[0] : "", "无标题动态").slice(0, 180);
-      card.append(el("div", { className: "bdf-title", text: displayTitle }));
+      const titleRow = el("div", { className: "bdf-title-row" });
+      if (item.chargeLabel) titleRow.append(el("span", { className: "bdf-charge-badge", text: item.chargeLabel }));
+      titleRow.append(el("div", { className: "bdf-title", text: displayTitle }));
+      card.append(titleRow);
       if (validPreview && item.preview !== displayTitle) card.append(el("div", { className: "bdf-preview", text: item.preview }));
       const links = el("div", { className: "bdf-result-links" });
       if (item.dynamicHref) links.append(el("a", { href: item.dynamicHref, target: "_blank", rel: "noopener", text: "打开动态 →" }));

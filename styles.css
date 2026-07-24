@@ -44,7 +44,9 @@
 .bdf-author-info { min-width: 0; }
 .bdf-author { overflow: hidden; color: #18191c; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .bdf-meta { color: #9499a0; font-size: 12px; }
-.bdf-title { margin-top: 4px; color: #18191c; font-weight: 600; }
+.bdf-title-row { display: flex; align-items: flex-start; gap: 6px; margin-top: 4px; }
+.bdf-title { min-width: 0; color: #18191c; font-weight: 600; }
+.bdf-charge-badge { flex: 0 0 auto; margin-top: 1px; padding: 1px 5px; border-radius: 4px; background: #fff0f4; color: #fb7299; font-size: 11px; font-weight: 600; line-height: 1.5; }
 .bdf-preview { display: -webkit-box; margin-top: 5px; overflow: hidden; color: #61666d; font-size: 12px; line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
 .bdf-cover { display: block; width: 100%; max-height: 190px; margin-top: 7px; border-radius: 8px; background: #f1f2f3; object-fit: cover; }
 .bdf-result-links { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; }
