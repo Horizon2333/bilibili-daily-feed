@@ -43,7 +43,8 @@
 .bdf-avatar { width: 34px; height: 34px; flex: 0 0 34px; border-radius: 50%; background: #f1f2f3; object-fit: cover; }
 .bdf-author-info { min-width: 0; }
 .bdf-author { overflow: hidden; color: #18191c; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.bdf-meta { color: #9499a0; font-size: 12px; }
+.bdf-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: #9499a0; font-size: 12px; }
+.bdf-duration { padding: 1px 5px; border-radius: 4px; background: #f1f2f3; color: #61666d; font-size: 11px; font-weight: 500; line-height: 1.5; }
 .bdf-title-row { display: flex; align-items: flex-start; gap: 6px; margin-top: 4px; }
 .bdf-title { min-width: 0; color: #18191c; font-weight: 600; }
 .bdf-charge-badge { flex: 0 0 auto; margin-top: 1px; padding: 1px 5px; border-radius: 4px; background: #fff0f4; color: #fb7299; font-size: 11px; font-weight: 600; line-height: 1.5; }
