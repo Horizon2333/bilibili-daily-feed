@@ -608,10 +608,12 @@
       if (safeAvatar) authorRow.append(el("img", { className: "bdf-avatar", src: safeAvatar, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }));
       const authorInfo = el("div", { className: "bdf-author-info" });
       authorInfo.append(el("div", { className: "bdf-author", text: item.author || "未知账号" }));
-      const metaParts = [item.timeText];
-      if (item.isVideo) metaParts.push("视频");
-      if (item.durationText) metaParts.push(item.durationText);
-      authorInfo.append(el("div", { className: "bdf-meta", text: metaParts.filter(Boolean).join(" · ") }));
+      const meta = el("div", { className: "bdf-meta" });
+      meta.append(document.createTextNode(`${item.timeText}${item.isVideo ? " · 视频" : ""}`));
+      if (item.durationText) {
+        meta.append(el("span", { className: "bdf-duration", text: `时长 ${item.durationText}` }));
+      }
+      authorInfo.append(meta);
       authorRow.append(authorInfo);
       card.append(authorRow);
       if (safeImage) card.append(el("img", { className: "bdf-cover", src: safeImage, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }));
