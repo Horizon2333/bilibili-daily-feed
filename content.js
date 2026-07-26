@@ -617,13 +617,31 @@
       authorRow.append(authorInfo);
       card.append(authorRow);
       if (safeImage) {
-        card.append(el("img", {
+        const cover = el("img", {
           className: item.isVideo ? "bdf-cover bdf-video-cover" : "bdf-cover",
           src: safeImage,
           alt: "",
           loading: "lazy",
           referrerpolicy: "no-referrer"
-        }));
+        });
+        const imageHref = item.isVideo
+          ? firstText(item.contentHref, item.dynamicHref)
+          : firstText(item.dynamicHref, item.contentHref);
+        if (imageHref) {
+          const coverLink = el("a", {
+            className: item.isVideo ? "bdf-cover-link bdf-video-cover-link" : "bdf-cover-link",
+            href: imageHref,
+            target: "_blank",
+            rel: "noopener",
+            title: item.isVideo ? "打开视频" : "打开动态",
+            "aria-label": item.isVideo ? "打开视频" : "打开动态"
+          });
+          coverLink.append(cover);
+          card.append(coverLink);
+        } else {
+          cover.classList.add("bdf-cover-standalone");
+          card.append(cover);
+        }
       }
       const validTitle = item.title && !/^(?:MAJOR|DYNAMIC|ADDITIONAL|MODULE)_TYPE_[A-Z0-9_]+$/.test(item.title);
       const validPreview = item.preview && !/^(?:MAJOR|DYNAMIC|ADDITIONAL|MODULE)_TYPE_[A-Z0-9_]+$/.test(item.preview);
