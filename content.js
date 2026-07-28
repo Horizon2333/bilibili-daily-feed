@@ -19,12 +19,14 @@
     account: null,
     accountKey: "",
     cache: {},
+    coverage: {},
     seen: new Set(),
     lastOldestDay: null,
     unchangedRounds: 0
   };
   let mutationTimer = null;
   let resizeSaveTimer = null;
+  let statusHideTimer = null;
   let panelPrefsReady = false;
   const pendingAddedNodes = new Set();
   const liveCards = new Map();
@@ -43,17 +45,44 @@
   const panel = el("aside", { id: "bdf-panel" });
   panel.innerHTML = `
     <div class="bdf-head">
-      <strong>B站动态按天看 <small id="bdf-account"></small></strong>
+      <div class="bdf-head-title">
+        <strong>B站动态按天看 <span class="bdf-version">v${chrome.runtime.getManifest().version}</span></strong>
+        <small><a href="https://github.com/Horizon2333" target="_blank" rel="noopener">作者：Horizon2333</a><span>·</span><a href="https://github.com/Horizon2333/bilibili-daily-feed/releases/latest" target="_blank" rel="noopener">检查更新</a></small>
+      </div>
       <button id="bdf-collapse" title="收起">−</button>
     </div>
     <div class="bdf-body">
-      <label>日期<input id="bdf-date" type="date"></label>
-      <label>内容<select id="bdf-kind"><option value="all">全部动态</option><option value="video">仅视频</option></select></label>
+      <div class="bdf-query-row">
+        <label class="bdf-date-control">日期<input id="bdf-date" type="date"></label>
+        <div class="bdf-view-tools" role="group" aria-label="内容显示选项">
+          <div class="bdf-tool-wrap">
+            <button id="bdf-filter" class="bdf-tool-button" type="button" data-tooltip="内容过滤" aria-label="内容过滤：全部动态" aria-haspopup="menu" aria-expanded="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6.3 7.2v5.1L10.3 19v-6.8L4 5Z"></path></svg>
+            </button>
+            <div id="bdf-filter-menu" class="bdf-tool-menu" role="menu" hidden>
+              <button type="button" role="menuitemradio" data-kind="all">全部动态</button>
+              <button type="button" role="menuitemradio" data-kind="video">仅视频</button>
+            </div>
+          </div>
+          <div class="bdf-tool-wrap">
+            <button id="bdf-sort" class="bdf-tool-button" type="button" data-tooltip="排列顺序" aria-label="排列顺序：从早到晚" aria-haspopup="menu" aria-expanded="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 3v18M4 18l3 3 3-3M17 21V3M14 6l3-3 3 3"></path>
+              </svg>
+            </button>
+            <div id="bdf-sort-menu" class="bdf-tool-menu" role="menu" hidden>
+              <button type="button" role="menuitemradio" data-sort="oldest">从早到晚</button>
+              <button type="button" role="menuitemradio" data-sort="newest">从晚到早</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <small id="bdf-account-note" class="bdf-account-note">账号：确认中…</small>
       <div class="bdf-actions">
         <button id="bdf-load" class="bdf-primary">加载这一天</button>
         <button id="bdf-stop" disabled>停止</button>
       </div>
-      <p id="bdf-status">选择日期后开始加载。</p>
+      <p id="bdf-status" hidden></p>
       <button id="bdf-retry" class="bdf-secondary" hidden>重新确认账号</button>
       <div id="bdf-results"></div>
       <details id="bdf-cache-manager">
@@ -68,15 +97,20 @@
   document.documentElement.append(panel);
 
   const dateInput = panel.querySelector("#bdf-date");
-  const kindInput = panel.querySelector("#bdf-kind");
+  const filterButton = panel.querySelector("#bdf-filter");
+  const sortButton = panel.querySelector("#bdf-sort");
+  const filterMenu = panel.querySelector("#bdf-filter-menu");
+  const sortMenu = panel.querySelector("#bdf-sort-menu");
   const loadButton = panel.querySelector("#bdf-load");
   const stopButton = panel.querySelector("#bdf-stop");
   const status = panel.querySelector("#bdf-status");
   const retryButton = panel.querySelector("#bdf-retry");
   const cacheStats = panel.querySelector("#bdf-cache-stats");
-  const accountLabel = panel.querySelector("#bdf-account");
+  const accountNote = panel.querySelector("#bdf-account-note");
   const results = panel.querySelector("#bdf-results");
   const panelHead = panel.querySelector(".bdf-head");
+  let kindFilter = "all";
+  let sortOrder = "oldest";
   dateInput.value = formatDay(Date.now());
   loadButton.disabled = true;
 
@@ -88,6 +122,45 @@
     };
   }
 
+  function syncViewControls() {
+    const videoOnly = kindFilter === "video";
+    const filterLabel = videoOnly ? "内容过滤：仅视频" : "内容过滤：全部动态";
+    filterButton.classList.toggle("bdf-tool-active", videoOnly);
+    filterButton.setAttribute("aria-label", filterLabel);
+    filterMenu.querySelectorAll("[data-kind]").forEach((option) => {
+      const selected = option.dataset.kind === kindFilter;
+      option.classList.toggle("bdf-menu-selected", selected);
+      option.setAttribute("aria-checked", String(selected));
+    });
+
+    const sortLabel = sortOrder === "oldest" ? "排列顺序：从早到晚" : "排列顺序：从晚到早";
+    sortButton.setAttribute("aria-label", sortLabel);
+    sortButton.classList.toggle("bdf-tool-active", sortOrder === "newest");
+    sortMenu.querySelectorAll("[data-sort]").forEach((option) => {
+      const selected = option.dataset.sort === sortOrder;
+      option.classList.toggle("bdf-menu-selected", selected);
+      option.setAttribute("aria-checked", String(selected));
+    });
+  }
+
+  function closeToolMenus(except) {
+    [[filterButton, filterMenu], [sortButton, sortMenu]].forEach(([button, menu]) => {
+      if (menu === except) return;
+      menu.hidden = true;
+      button.setAttribute("aria-expanded", "false");
+      button.closest(".bdf-tool-wrap").classList.remove("bdf-menu-open");
+    });
+  }
+
+  function toggleToolMenu(button, menu) {
+    const willOpen = menu.hidden;
+    closeToolMenus(menu);
+    menu.hidden = !willOpen;
+    button.setAttribute("aria-expanded", String(willOpen));
+    button.closest(".bdf-tool-wrap").classList.toggle("bdf-menu-open", willOpen);
+    if (willOpen) menu.querySelector(".bdf-menu-selected")?.focus();
+  }
+
   function savePanelPrefs() {
     if (!panelPrefsReady || panel.classList.contains("bdf-collapsed")) return;
     const rect = panel.getBoundingClientRect();
@@ -96,7 +169,9 @@
         width: Math.round(rect.width),
         height: Math.round(rect.height),
         left: Math.round(rect.left),
-        top: Math.round(rect.top)
+        top: Math.round(rect.top),
+        sort: sortOrder,
+        kind: kindFilter
       }
     });
   }
@@ -105,6 +180,9 @@
     const prefs = data[PANEL_PREFS_KEY] || {};
     if (Number.isFinite(prefs.width)) panel.style.width = `${Math.max(300, prefs.width)}px`;
     if (Number.isFinite(prefs.height)) panel.style.height = `${Math.max(260, prefs.height)}px`;
+    if (["oldest", "newest"].includes(prefs.sort)) sortOrder = prefs.sort;
+    if (["all", "video"].includes(prefs.kind)) kindFilter = prefs.kind;
+    syncViewControls();
     const initialLeft = Number.isFinite(prefs.left) ? prefs.left : window.innerWidth - panel.getBoundingClientRect().width - 18;
     const initialTop = Number.isFinite(prefs.top) ? prefs.top : 88;
     const position = clampPanelPosition(initialLeft, initialTop);
@@ -121,7 +199,7 @@
   panelResizeObserver.observe(panel);
 
   panelHead.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || event.target.closest("button")) return;
+    if (event.button !== 0 || event.target.closest("button, a")) return;
     const startRect = panel.getBoundingClientRect();
     const startX = event.clientX;
     const startY = event.clientY;
@@ -186,18 +264,21 @@
     state.account = account;
     state.accountKey = key;
     state.cache = entry.days;
+    state.coverage = entry.coverage;
     state.seen = new Set(Object.values(state.cache).flat().map((item) => item.key));
-    accountLabel.textContent = `· ${account.name || `UID ${key}`}`;
+    accountNote.textContent = `账号：${account.name || `UID ${key}`}`;
   }
 
   async function storageSet(replace) {
     if (!state.accountKey) throw new Error("当前账号尚未初始化");
     const entry = ensureAccount(state.store, state.account, Date.now());
     entry.days = state.cache;
+    entry.coverage = state.coverage;
     const response = await new Promise((resolve, reject) => chrome.runtime.sendMessage({
       type: "bdf-save-cache",
       account: state.account,
       days: state.cache,
+      coverage: state.coverage,
       replace: Boolean(replace)
     }, (result) => {
       if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
@@ -206,6 +287,7 @@
     if (!response?.ok) throw new Error(response?.error || "缓存保存失败");
     state.store = normalizeStore(response.store);
     state.cache = state.store.accounts[state.accountKey]?.days || {};
+    state.coverage = state.store.accounts[state.accountKey]?.coverage || {};
     renderCacheStats();
   }
 
@@ -225,9 +307,16 @@
   }
 
   function setStatus(message, tone, canRetry) {
+    clearTimeout(statusHideTimer);
     status.textContent = message;
     status.dataset.tone = tone || "normal";
+    status.hidden = !message;
     retryButton.hidden = !canRetry;
+    if (message && !canRetry && (!tone || ["normal", "success"].includes(tone))) {
+      statusHideTimer = setTimeout(() => {
+        status.hidden = true;
+      }, 4500);
+    }
   }
 
   const ALLOWED_HOST_SUFFIXES = ["bilibili.com", "hdslb.com", "biliimg.com"];
@@ -362,6 +451,11 @@
       article.covers?.[0],
       common.cover
     ));
+    const imageCount = Math.max(
+      Array.isArray(opus.pics) ? opus.pics.length : 0,
+      Array.isArray(draw.items) ? draw.items.length : 0,
+      Array.isArray(article.covers) ? article.covers.length : 0
+    );
     const contentHref = apiJumpUrl(firstText(
       archive.jump_url,
       article.jump_url,
@@ -385,6 +479,7 @@
       title,
       preview,
       image,
+      imageCount,
       dynamicHref: `https://www.bilibili.com/opus/${raw.id_str}`,
       contentHref,
       isVideo,
@@ -419,6 +514,7 @@
     let scanned = 0;
     let pages = 0;
     let crossed = false;
+    let exhausted = false;
     const knownOffsets = new Set();
 
     while (!state.stopRequested && pages < 500) {
@@ -437,11 +533,15 @@
         break;
       }
       setStatus(`接口已读取 ${scanned} 条，列表末尾 ${tail ? tail.day : "未知"}…`, "working");
-      if (!data.has_more || !data.offset || !items.length) break;
+      if (!data.has_more || !data.offset) {
+        exhausted = true;
+        break;
+      }
+      if (!items.length) break;
       offset = data.offset;
     }
 
-    return { crossed, scanned };
+    return { crossed, exhausted, scanned };
   }
 
   function findTime(card) {
@@ -489,23 +589,24 @@
     return (fallback || "无标题动态").slice(0, 180);
   }
 
-  function findImage(contentRoot) {
-    const preferred = contentRoot.querySelector([
+  function findImages(contentRoot) {
+    const preferred = Array.from(contentRoot.querySelectorAll([
       ".bili-album__preview__picture__img",
       ".bili-dyn-card-video img",
       ".bili-video-card img",
       ".bili-dyn-content__orig img",
       ".bili-dyn-pic__img",
       "[class*='major'] img"
-    ].join(","));
-    const candidates = preferred ? [preferred] : Array.from(contentRoot.querySelectorAll("img"));
-    const image = candidates.find((node) => {
+    ].join(",")));
+    const candidates = preferred.length ? preferred : Array.from(contentRoot.querySelectorAll("img"));
+    const urls = candidates.filter((node) => {
       const marker = `${node.className || ""} ${node.alt || ""}`.toLowerCase();
       return !/avatar|face|emoji|ornament|pendant/.test(marker);
-    });
-    if (!image) return "";
-    const value = image.currentSrc || image.src || image.getAttribute("data-src") || image.getAttribute("data-lazy-src") || "";
-    return apiImageUrl(value);
+    }).map((image) => {
+      const value = image.currentSrc || image.src || image.getAttribute("data-src") || image.getAttribute("data-lazy-src") || "";
+      return apiImageUrl(value);
+    }).filter(Boolean);
+    return Array.from(new Set(urls));
   }
 
   function findDynamicIdentity(card, links) {
@@ -547,7 +648,8 @@
     const avatar = avatarNode ? apiImageUrl(avatarNode.currentSrc || avatarNode.src || avatarNode.getAttribute("data-src") || "") : "";
     const title = findTitle(contentRoot, videoLink, author, timeText);
     const preview = contentPreview(contentText, 320);
-    const image = findImage(contentRoot);
+    const images = findImages(contentRoot);
+    const image = images[0] || "";
     const isVideo = Boolean(videoLink) || /投稿了视频|发布了动态视频|联合创作/.test(cardText);
     const videoRoot = videoLink?.closest(".bili-dyn-card-video, .bili-video-card, [class*='video']") || contentRoot;
     const durationText = Array.from(videoRoot.querySelectorAll(
@@ -564,7 +666,8 @@
     const key = dynamicId || dynamicHref || fingerprint(`${formatDay(parsed)}|${timeText}|${author}|${contentText}|${image}|${linkFingerprint}`);
     return {
       key, day: formatDay(parsed), timeText, author, avatar, title, preview, image,
-      dynamicHref, contentHref, isVideo, durationText, chargeLabel
+      imageCount: images.length, dynamicHref, contentHref, isVideo, durationText, chargeLabel,
+      pubTimestamp: parsed.getTime()
     };
   }
 
@@ -588,13 +691,48 @@
     return items;
   }
 
+  function setCoverage(day, complete, source, reason, scanned) {
+    state.coverage[day] = {
+      complete: Boolean(complete),
+      source,
+      reason,
+      scanned: Number(scanned) || 0,
+      updatedAt: Date.now()
+    };
+  }
+
+  function coverageText(record) {
+    if (!record) return "完整度：尚未确认";
+    const source = record.source === "api" ? "接口读取" : "页面扫描";
+    if (record.complete) return `完整度：已完整读取 · ${source}`;
+    if (record.reason === "stopped") return `完整度：已停止，可能不完整 · ${source}`;
+    if (record.reason === "error") return `完整度：加载中断，可能不完整 · ${source}`;
+    return `完整度：未越过目标日期，可能不完整 · ${source}`;
+  }
+
   function render() {
     const day = dateInput.value;
-    const kind = kindInput.value;
-    const items = (state.cache[day] || []).filter((item) => kind === "all" || item.isVideo);
+    const kind = kindFilter;
+    const direction = sortOrder === "newest" ? -1 : 1;
+    const items = (state.cache[day] || [])
+      .filter((item) => kind === "all" || item.isVideo)
+      .map((item, index) => ({ item, index }))
+      .sort((left, right) => {
+        const leftTime = Number(left.item.pubTimestamp);
+        const rightTime = Number(right.item.pubTimestamp);
+        if (leftTime && rightTime && leftTime !== rightTime) return (leftTime - rightTime) * direction;
+        return (right.index - left.index) * direction;
+      })
+      .map(({ item }) => item);
     renderCacheStats();
     results.replaceChildren();
-    const summary = el("div", { className: "bdf-summary", text: `${day} · ${items.length} 条${kind === "video" ? "视频" : "动态"}` });
+    const summary = el("div", { className: "bdf-summary" });
+    summary.append(el("span", { text: `${day} · ${items.length} 条${kind === "video" ? "视频" : "动态"}` }));
+    const coverage = state.coverage[day];
+    summary.append(el("span", {
+      className: `bdf-coverage ${coverage?.complete ? "bdf-coverage-complete" : "bdf-coverage-partial"}`,
+      text: coverageText(coverage)
+    }));
     results.append(summary);
     if (!items.length) {
       results.append(el("div", { className: "bdf-empty", text: "尚未收集到这一天的内容。" }));
@@ -612,6 +750,9 @@
       meta.append(document.createTextNode(`${item.timeText}${item.isVideo ? " · 视频" : ""}`));
       if (item.durationText) {
         meta.append(el("span", { className: "bdf-duration", text: `时长 ${item.durationText}` }));
+      }
+      if (Number(item.imageCount) > 1) {
+        meta.append(el("span", { className: "bdf-image-count", text: `共 ${item.imageCount} 张` }));
       }
       authorInfo.append(meta);
       authorRow.append(authorInfo);
@@ -693,12 +834,21 @@
     const target = startOfDay(`${dateInput.value}T00:00:00`).getTime();
     let previousCount = document.querySelectorAll(CARD_SELECTOR).length;
     let rounds = 0;
+    let pageCrossed = false;
 
     setStatus("正在通过 B 站动态接口读取…", "working");
 
     try {
       try {
         const apiResult = await loadSelectedDayFromApi(target);
+        const apiComplete = !state.stopRequested && (apiResult.crossed || apiResult.exhausted);
+        setCoverage(
+          dateInput.value,
+          apiComplete,
+          "api",
+          state.stopRequested ? "stopped" : apiComplete ? (apiResult.crossed ? "crossed" : "exhausted") : "boundary",
+          apiResult.scanned
+        );
         await storageSet();
         const found = (state.cache[dateInput.value] || []).length;
         if (state.stopRequested) setStatus(`已停止，已缓存 ${found} 条当天动态。`, "normal");
@@ -722,7 +872,10 @@
         // from the whole page can stop early when B站 inserts an older pinned or
         // forwarded card near the top. Selecting 06-18 therefore keeps loading
         // until the bottom of the feed has crossed into 06-17 (or earlier).
-        if (tailDay !== null && hasCrossedTargetDay(tailDay, target)) break;
+        if (tailDay !== null && hasCrossedTargetDay(tailDay, target)) {
+          pageCrossed = true;
+          break;
+        }
 
         window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
         await sleep(750);
@@ -736,6 +889,14 @@
         setStatus(`已扫描 ${count} 条，列表末尾 ${oldestLabel}…`, "working");
         if (state.unchangedRounds >= 8) break;
       }
+      const pageComplete = !state.stopRequested && pageCrossed;
+      setCoverage(
+        dateInput.value,
+        pageComplete,
+        "page",
+        state.stopRequested ? "stopped" : pageComplete ? "crossed" : "boundary",
+        previousCount
+      );
       await storageSet();
       render();
       const found = (state.cache[dateInput.value] || []).length;
@@ -743,6 +904,9 @@
       else if (state.unchangedRounds >= 8) setStatus(`页面不再加载；当天共缓存 ${found} 条。`, "normal");
       else setStatus(`已越过目标日期；当天共缓存 ${found} 条。`, "success");
     } catch (error) {
+      setCoverage(dateInput.value, false, "page", "error", previousCount);
+      try { await storageSet(); } catch (_) { /* Keep the original loading error. */ }
+      render();
       setStatus(`加载中断：${error.message || "页面发生变化"}`, "error");
     } finally {
       state.running = false;
@@ -753,13 +917,55 @@
 
   loadButton.addEventListener("click", loadSelectedDay);
   stopButton.addEventListener("click", () => { state.stopRequested = true; });
-  dateInput.addEventListener("change", render);
-  kindInput.addEventListener("change", render);
+  dateInput.addEventListener("change", () => {
+    setStatus("");
+    render();
+  });
+  filterButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleToolMenu(filterButton, filterMenu);
+  });
+  sortButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleToolMenu(sortButton, sortMenu);
+  });
+  filterMenu.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-kind]");
+    if (!option) return;
+    kindFilter = option.dataset.kind;
+    syncViewControls();
+    closeToolMenus();
+    render();
+    savePanelPrefs();
+  });
+  sortMenu.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-sort]");
+    if (!option) return;
+    sortOrder = option.dataset.sort;
+    syncViewControls();
+    closeToolMenus();
+    render();
+    savePanelPrefs();
+  });
+  panel.addEventListener("click", (event) => {
+    if (!event.target.closest(".bdf-tool-wrap")) closeToolMenus();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!panel.contains(event.target)) closeToolMenus();
+  });
+  panel.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      const openButton = panel.querySelector(".bdf-tool-button[aria-expanded='true']");
+      closeToolMenus();
+      openButton?.focus();
+    }
+  });
   panel.querySelector("#bdf-collapse").addEventListener("click", () => panel.classList.toggle("bdf-collapsed"));
   panel.querySelector("#bdf-clear").addEventListener("click", async () => {
     try {
       await refreshAccount();
       state.cache = {};
+      state.coverage = {};
       state.seen.clear();
       await storageSet(true);
       render();
@@ -775,6 +981,7 @@
       const day = dateInput.value;
       const removed = (state.cache[day] || []).length;
       delete state.cache[day];
+      delete state.coverage[day];
       await storageSet(true);
       render();
       setStatus(removed ? `已清除 ${day} 的 ${removed} 条缓存。` : `${day} 没有缓存。`, "normal");
@@ -794,11 +1001,11 @@
       state.ready = true;
       loadButton.disabled = false;
       render();
-      setStatus(`当前账号：${state.account.name || `UID ${state.accountKey}`}。缓存按账号隔离。`, "success");
+      setStatus("");
     } catch (error) {
       state.ready = false;
       loadButton.disabled = true;
-      accountLabel.textContent = "· 未登录";
+      accountNote.textContent = "账号：未登录";
       setStatus(error.message || "初始化失败", "error", true);
     } finally {
       retryButton.disabled = false;
