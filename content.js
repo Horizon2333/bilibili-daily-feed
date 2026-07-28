@@ -45,8 +45,8 @@
   panel.innerHTML = `
     <div class="bdf-head">
       <div class="bdf-head-title">
-        <strong>B站动态按天看</strong>
-        <small><a id="bdf-project" href="https://github.com/Horizon2333/bilibili-daily-feed" target="_blank" rel="noopener">Horizon2333</a><span>·</span><span>v${chrome.runtime.getManifest().version}</span><span>·</span><a href="https://github.com/Horizon2333/bilibili-daily-feed/releases/latest" target="_blank" rel="noopener">检查更新</a></small>
+        <strong>B站动态按天看 <span class="bdf-version">v${chrome.runtime.getManifest().version}</span></strong>
+        <small><a href="https://github.com/Horizon2333" target="_blank" rel="noopener">作者：Horizon2333</a><span>·</span><a href="https://github.com/Horizon2333/bilibili-daily-feed/releases/latest" target="_blank" rel="noopener">检查更新</a></small>
       </div>
       <button id="bdf-collapse" title="收起">−</button>
     </div>
@@ -54,14 +54,29 @@
       <div class="bdf-query-row">
         <label class="bdf-date-control">日期<input id="bdf-date" type="date"></label>
         <div class="bdf-view-tools" role="group" aria-label="内容显示选项">
-          <button id="bdf-filter" class="bdf-tool-button" type="button" title="内容：全部动态" aria-label="内容：全部动态" aria-pressed="false">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6.3 7.2v5.1L10.3 19v-6.8L4 5Z"></path></svg>
-          </button>
-          <button id="bdf-sort" class="bdf-tool-button" type="button" title="排序：从早到晚" aria-label="排序：从早到晚">
-            <span aria-hidden="true">↑</span>
-          </button>
+          <div class="bdf-tool-wrap">
+            <button id="bdf-filter" class="bdf-tool-button" type="button" data-tooltip="内容过滤" aria-label="内容过滤：全部动态" aria-haspopup="menu" aria-expanded="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6.3 7.2v5.1L10.3 19v-6.8L4 5Z"></path></svg>
+            </button>
+            <div id="bdf-filter-menu" class="bdf-tool-menu" role="menu" hidden>
+              <button type="button" role="menuitemradio" data-kind="all">全部动态</button>
+              <button type="button" role="menuitemradio" data-kind="video">仅视频</button>
+            </div>
+          </div>
+          <div class="bdf-tool-wrap">
+            <button id="bdf-sort" class="bdf-tool-button" type="button" data-tooltip="排列顺序" aria-label="排列顺序：从早到晚" aria-haspopup="menu" aria-expanded="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 3v18M4 18l3 3 3-3M17 21V3M14 6l3-3 3 3"></path>
+              </svg>
+            </button>
+            <div id="bdf-sort-menu" class="bdf-tool-menu" role="menu" hidden>
+              <button type="button" role="menuitemradio" data-sort="oldest">从早到晚</button>
+              <button type="button" role="menuitemradio" data-sort="newest">从晚到早</button>
+            </div>
+          </div>
         </div>
       </div>
+      <small id="bdf-account-note" class="bdf-account-note">账号：确认中…</small>
       <div class="bdf-actions">
         <button id="bdf-load" class="bdf-primary">加载这一天</button>
         <button id="bdf-stop" disabled>停止</button>
@@ -83,11 +98,14 @@
   const dateInput = panel.querySelector("#bdf-date");
   const filterButton = panel.querySelector("#bdf-filter");
   const sortButton = panel.querySelector("#bdf-sort");
+  const filterMenu = panel.querySelector("#bdf-filter-menu");
+  const sortMenu = panel.querySelector("#bdf-sort-menu");
   const loadButton = panel.querySelector("#bdf-load");
   const stopButton = panel.querySelector("#bdf-stop");
   const status = panel.querySelector("#bdf-status");
   const retryButton = panel.querySelector("#bdf-retry");
   const cacheStats = panel.querySelector("#bdf-cache-stats");
+  const accountNote = panel.querySelector("#bdf-account-note");
   const results = panel.querySelector("#bdf-results");
   const panelHead = panel.querySelector(".bdf-head");
   let kindFilter = "all";
@@ -105,17 +123,41 @@
 
   function syncViewControls() {
     const videoOnly = kindFilter === "video";
-    const filterLabel = videoOnly ? "内容：仅视频" : "内容：全部动态";
+    const filterLabel = videoOnly ? "内容过滤：仅视频" : "内容过滤：全部动态";
     filterButton.classList.toggle("bdf-tool-active", videoOnly);
-    filterButton.setAttribute("title", filterLabel);
     filterButton.setAttribute("aria-label", filterLabel);
-    filterButton.setAttribute("aria-pressed", String(videoOnly));
+    filterMenu.querySelectorAll("[data-kind]").forEach((option) => {
+      const selected = option.dataset.kind === kindFilter;
+      option.classList.toggle("bdf-menu-selected", selected);
+      option.setAttribute("aria-checked", String(selected));
+    });
 
-    const oldestFirst = sortOrder === "oldest";
-    const sortLabel = oldestFirst ? "排序：从早到晚" : "排序：从晚到早";
-    sortButton.querySelector("span").textContent = oldestFirst ? "↑" : "↓";
-    sortButton.setAttribute("title", sortLabel);
+    const sortLabel = sortOrder === "oldest" ? "排列顺序：从早到晚" : "排列顺序：从晚到早";
     sortButton.setAttribute("aria-label", sortLabel);
+    sortButton.classList.toggle("bdf-tool-active", sortOrder === "newest");
+    sortMenu.querySelectorAll("[data-sort]").forEach((option) => {
+      const selected = option.dataset.sort === sortOrder;
+      option.classList.toggle("bdf-menu-selected", selected);
+      option.setAttribute("aria-checked", String(selected));
+    });
+  }
+
+  function closeToolMenus(except) {
+    [[filterButton, filterMenu], [sortButton, sortMenu]].forEach(([button, menu]) => {
+      if (menu === except) return;
+      menu.hidden = true;
+      button.setAttribute("aria-expanded", "false");
+      button.closest(".bdf-tool-wrap").classList.remove("bdf-menu-open");
+    });
+  }
+
+  function toggleToolMenu(button, menu) {
+    const willOpen = menu.hidden;
+    closeToolMenus(menu);
+    menu.hidden = !willOpen;
+    button.setAttribute("aria-expanded", String(willOpen));
+    button.closest(".bdf-tool-wrap").classList.toggle("bdf-menu-open", willOpen);
+    if (willOpen) menu.querySelector(".bdf-menu-selected")?.focus();
   }
 
   function savePanelPrefs() {
@@ -223,6 +265,7 @@
     state.cache = entry.days;
     state.coverage = entry.coverage;
     state.seen = new Set(Object.values(state.cache).flat().map((item) => item.key));
+    accountNote.textContent = `账号：${account.name || `UID ${key}`}`;
   }
 
   async function storageSet(replace) {
@@ -867,17 +910,44 @@
   loadButton.addEventListener("click", loadSelectedDay);
   stopButton.addEventListener("click", () => { state.stopRequested = true; });
   dateInput.addEventListener("change", render);
-  filterButton.addEventListener("click", () => {
-    kindFilter = kindFilter === "all" ? "video" : "all";
+  filterButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleToolMenu(filterButton, filterMenu);
+  });
+  sortButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleToolMenu(sortButton, sortMenu);
+  });
+  filterMenu.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-kind]");
+    if (!option) return;
+    kindFilter = option.dataset.kind;
     syncViewControls();
+    closeToolMenus();
     render();
     savePanelPrefs();
   });
-  sortButton.addEventListener("click", () => {
-    sortOrder = sortOrder === "oldest" ? "newest" : "oldest";
+  sortMenu.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-sort]");
+    if (!option) return;
+    sortOrder = option.dataset.sort;
     syncViewControls();
+    closeToolMenus();
     render();
     savePanelPrefs();
+  });
+  panel.addEventListener("click", (event) => {
+    if (!event.target.closest(".bdf-tool-wrap")) closeToolMenus();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!panel.contains(event.target)) closeToolMenus();
+  });
+  panel.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      const openButton = panel.querySelector(".bdf-tool-button[aria-expanded='true']");
+      closeToolMenus();
+      openButton?.focus();
+    }
   });
   panel.querySelector("#bdf-collapse").addEventListener("click", () => panel.classList.toggle("bdf-collapsed"));
   panel.querySelector("#bdf-clear").addEventListener("click", async () => {
@@ -920,10 +990,11 @@
       state.ready = true;
       loadButton.disabled = false;
       render();
-      setStatus(`当前账号：${state.account.name || `UID ${state.accountKey}`}。缓存按账号隔离。`, "success");
+      setStatus("选择日期后开始加载。", "normal");
     } catch (error) {
       state.ready = false;
       loadButton.disabled = true;
+      accountNote.textContent = "账号：未登录";
       setStatus(error.message || "初始化失败", "error", true);
     } finally {
       retryButton.disabled = false;

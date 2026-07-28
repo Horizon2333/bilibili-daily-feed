@@ -24,6 +24,7 @@
 .bdf-head { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; padding: 11px 15px; border-bottom: 1px solid #eee; cursor: move; touch-action: none; user-select: none; }
 .bdf-head-title { min-width: 0; line-height: 1.25; }
 .bdf-head strong { display: block; font-size: 16px; }
+.bdf-version { margin-left: 3px; color: #9499a0; font-size: 11px; font-weight: 400; vertical-align: 1px; }
 .bdf-head small { display: flex; align-items: center; gap: 5px; margin-top: 2px; overflow: hidden; color: #9499a0; font-size: 11px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .bdf-head small a { color: #00aeec; text-decoration: none; }
 .bdf-head button, .bdf-actions button { border: 0; border-radius: 8px; cursor: pointer; }
@@ -34,12 +35,21 @@
 .bdf-query-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .bdf-date-control { flex: 1 1 auto; grid-template-columns: 34px minmax(0, 1fr) !important; margin: 0 !important; }
 .bdf-view-tools { display: flex; flex: 0 0 auto; gap: 5px; }
-.bdf-tool-button { display: grid; width: 34px; height: 34px; padding: 0; place-items: center; border: 1px solid #e3e5e7; border-radius: 8px; background: #f6f7f8; color: #61666d; cursor: pointer; }
+.bdf-tool-wrap { position: relative; }
+.bdf-tool-button { position: relative; display: grid; width: 34px; height: 34px; padding: 0; place-items: center; border: 1px solid #e3e5e7; border-radius: 8px; background: #f6f7f8; color: #61666d; cursor: pointer; }
 .bdf-tool-button:hover { border-color: #00aeec; color: #008ac5; }
 .bdf-tool-button:focus-visible { outline: 3px solid rgba(0, 174, 236, 0.28); outline-offset: 1px; }
 .bdf-tool-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-linejoin: round; stroke-width: 1.8; }
-.bdf-tool-button span { font-size: 21px; line-height: 1; }
 .bdf-tool-button.bdf-tool-active { border-color: #00aeec; color: #008ac5; background: #e8f7fc; }
+.bdf-tool-button::after { position: absolute; z-index: 5; top: calc(100% + 6px); right: 0; display: none; width: max-content; padding: 4px 7px; border-radius: 5px; color: white; background: rgba(24, 25, 28, 0.9); content: attr(data-tooltip); font-size: 11px; font-weight: 400; line-height: 1.4; pointer-events: none; }
+.bdf-tool-wrap:not(.bdf-menu-open):hover .bdf-tool-button::after, .bdf-tool-wrap:not(.bdf-menu-open) .bdf-tool-button:focus-visible::after { display: block; }
+.bdf-tool-menu { position: absolute; z-index: 6; top: calc(100% + 6px); right: 0; width: 128px; padding: 5px; border: 1px solid #e3e5e7; border-radius: 9px; background: white; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14); }
+.bdf-tool-menu[hidden] { display: none; }
+.bdf-tool-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 7px 8px; border: 0; border-radius: 6px; color: #61666d; background: transparent; cursor: pointer; font-size: 12px; text-align: left; }
+.bdf-tool-menu button:hover, .bdf-tool-menu button:focus-visible { color: #008ac5; background: #e8f7fc; outline: 0; }
+.bdf-tool-menu .bdf-menu-selected { color: #008ac5; font-weight: 600; }
+.bdf-tool-menu .bdf-menu-selected::after { content: "✓"; }
+.bdf-account-note { display: block; margin: -3px 0 7px 42px; overflow: hidden; color: #9499a0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .bdf-actions { display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 8px; }
 .bdf-actions button { padding: 9px 10px; background: #f1f2f3; }
 .bdf-actions .bdf-primary { color: white; background: #00aeec; }
