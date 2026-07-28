@@ -46,14 +46,22 @@
     <div class="bdf-head">
       <div class="bdf-head-title">
         <strong>B站动态按天看</strong>
-        <small><a id="bdf-project" href="https://github.com/Horizon2333/bilibili-daily-feed" target="_blank" rel="noopener">Horizon2333</a> · v${chrome.runtime.getManifest().version} · <a href="https://github.com/Horizon2333/bilibili-daily-feed/releases/latest" target="_blank" rel="noopener">检查更新</a> · <span id="bdf-account"></span></small>
+        <small><a id="bdf-project" href="https://github.com/Horizon2333/bilibili-daily-feed" target="_blank" rel="noopener">Horizon2333</a><span>·</span><span>v${chrome.runtime.getManifest().version}</span><span>·</span><a href="https://github.com/Horizon2333/bilibili-daily-feed/releases/latest" target="_blank" rel="noopener">检查更新</a></small>
       </div>
       <button id="bdf-collapse" title="收起">−</button>
     </div>
     <div class="bdf-body">
-      <label>日期<input id="bdf-date" type="date"></label>
-      <label>内容<select id="bdf-kind"><option value="all">全部动态</option><option value="video">仅视频</option></select></label>
-      <label>排序<select id="bdf-sort"><option value="oldest">从早到晚</option><option value="newest">从晚到早</option></select></label>
+      <div class="bdf-query-row">
+        <label class="bdf-date-control">日期<input id="bdf-date" type="date"></label>
+        <div class="bdf-view-tools" role="group" aria-label="内容显示选项">
+          <button id="bdf-filter" class="bdf-tool-button" type="button" title="内容：全部动态" aria-label="内容：全部动态" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6.3 7.2v5.1L10.3 19v-6.8L4 5Z"></path></svg>
+          </button>
+          <button id="bdf-sort" class="bdf-tool-button" type="button" title="排序：从早到晚" aria-label="排序：从早到晚">
+            <span aria-hidden="true">↑</span>
+          </button>
+        </div>
+      </div>
       <div class="bdf-actions">
         <button id="bdf-load" class="bdf-primary">加载这一天</button>
         <button id="bdf-stop" disabled>停止</button>
@@ -73,16 +81,17 @@
   document.documentElement.append(panel);
 
   const dateInput = panel.querySelector("#bdf-date");
-  const kindInput = panel.querySelector("#bdf-kind");
-  const sortInput = panel.querySelector("#bdf-sort");
+  const filterButton = panel.querySelector("#bdf-filter");
+  const sortButton = panel.querySelector("#bdf-sort");
   const loadButton = panel.querySelector("#bdf-load");
   const stopButton = panel.querySelector("#bdf-stop");
   const status = panel.querySelector("#bdf-status");
   const retryButton = panel.querySelector("#bdf-retry");
   const cacheStats = panel.querySelector("#bdf-cache-stats");
-  const accountLabel = panel.querySelector("#bdf-account");
   const results = panel.querySelector("#bdf-results");
   const panelHead = panel.querySelector(".bdf-head");
+  let kindFilter = "all";
+  let sortOrder = "oldest";
   dateInput.value = formatDay(Date.now());
   loadButton.disabled = true;
 
@@ -94,6 +103,21 @@
     };
   }
 
+  function syncViewControls() {
+    const videoOnly = kindFilter === "video";
+    const filterLabel = videoOnly ? "内容：仅视频" : "内容：全部动态";
+    filterButton.classList.toggle("bdf-tool-active", videoOnly);
+    filterButton.setAttribute("title", filterLabel);
+    filterButton.setAttribute("aria-label", filterLabel);
+    filterButton.setAttribute("aria-pressed", String(videoOnly));
+
+    const oldestFirst = sortOrder === "oldest";
+    const sortLabel = oldestFirst ? "排序：从早到晚" : "排序：从晚到早";
+    sortButton.querySelector("span").textContent = oldestFirst ? "↑" : "↓";
+    sortButton.setAttribute("title", sortLabel);
+    sortButton.setAttribute("aria-label", sortLabel);
+  }
+
   function savePanelPrefs() {
     if (!panelPrefsReady || panel.classList.contains("bdf-collapsed")) return;
     const rect = panel.getBoundingClientRect();
@@ -103,7 +127,8 @@
         height: Math.round(rect.height),
         left: Math.round(rect.left),
         top: Math.round(rect.top),
-        sort: sortInput.value
+        sort: sortOrder,
+        kind: kindFilter
       }
     });
   }
@@ -112,7 +137,9 @@
     const prefs = data[PANEL_PREFS_KEY] || {};
     if (Number.isFinite(prefs.width)) panel.style.width = `${Math.max(300, prefs.width)}px`;
     if (Number.isFinite(prefs.height)) panel.style.height = `${Math.max(260, prefs.height)}px`;
-    if (["oldest", "newest"].includes(prefs.sort)) sortInput.value = prefs.sort;
+    if (["oldest", "newest"].includes(prefs.sort)) sortOrder = prefs.sort;
+    if (["all", "video"].includes(prefs.kind)) kindFilter = prefs.kind;
+    syncViewControls();
     const initialLeft = Number.isFinite(prefs.left) ? prefs.left : window.innerWidth - panel.getBoundingClientRect().width - 18;
     const initialTop = Number.isFinite(prefs.top) ? prefs.top : 88;
     const position = clampPanelPosition(initialLeft, initialTop);
@@ -196,7 +223,6 @@
     state.cache = entry.days;
     state.coverage = entry.coverage;
     state.seen = new Set(Object.values(state.cache).flat().map((item) => item.key));
-    accountLabel.textContent = account.name || `UID ${key}`;
   }
 
   async function storageSet(replace) {
@@ -635,8 +661,8 @@
 
   function render() {
     const day = dateInput.value;
-    const kind = kindInput.value;
-    const direction = sortInput.value === "newest" ? -1 : 1;
+    const kind = kindFilter;
+    const direction = sortOrder === "newest" ? -1 : 1;
     const items = (state.cache[day] || [])
       .filter((item) => kind === "all" || item.isVideo)
       .map((item, index) => ({ item, index }))
@@ -841,8 +867,15 @@
   loadButton.addEventListener("click", loadSelectedDay);
   stopButton.addEventListener("click", () => { state.stopRequested = true; });
   dateInput.addEventListener("change", render);
-  kindInput.addEventListener("change", render);
-  sortInput.addEventListener("change", () => {
+  filterButton.addEventListener("click", () => {
+    kindFilter = kindFilter === "all" ? "video" : "all";
+    syncViewControls();
+    render();
+    savePanelPrefs();
+  });
+  sortButton.addEventListener("click", () => {
+    sortOrder = sortOrder === "oldest" ? "newest" : "oldest";
+    syncViewControls();
     render();
     savePanelPrefs();
   });
@@ -891,7 +924,6 @@
     } catch (error) {
       state.ready = false;
       loadButton.disabled = true;
-      accountLabel.textContent = "未登录";
       setStatus(error.message || "初始化失败", "error", true);
     } finally {
       retryButton.disabled = false;
