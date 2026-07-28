@@ -20,8 +20,10 @@
 }
 #bdf-panel * { box-sizing: border-box; }
 .bdf-head { display: flex; align-items: center; justify-content: space-between; padding: 13px 15px; border-bottom: 1px solid #eee; cursor: move; touch-action: none; user-select: none; }
-.bdf-head strong { font-size: 16px; }
-.bdf-head small { color: #9499a0; font-size: 11px; font-weight: 400; }
+.bdf-head-title { min-width: 0; }
+.bdf-head strong { display: block; font-size: 16px; }
+.bdf-head small { display: block; overflow: hidden; color: #9499a0; font-size: 11px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.bdf-head small a { color: #00aeec; text-decoration: none; }
 .bdf-head button, .bdf-actions button { border: 0; border-radius: 8px; cursor: pointer; }
 .bdf-head button { width: 28px; height: 28px; background: #f1f2f3; font-size: 18px; }
 .bdf-body { min-width: 0; height: calc(100% - 55px); padding: 14px; overflow-x: hidden; overflow-y: auto; }
@@ -37,14 +39,16 @@
 #bdf-status[data-tone="error"] { color: #d03050; background: #fff0f1; }
 .bdf-secondary { width: 100%; margin: -4px 0 10px; padding: 7px 10px; border: 1px solid #00aeec; border-radius: 8px; background: white; color: #008ac5; cursor: pointer; }
 .bdf-secondary:disabled { cursor: wait; opacity: 0.6; }
-.bdf-summary { position: sticky; top: -14px; padding: 8px 0; background: white; color: #9499a0; font-size: 12px; }
+.bdf-summary { position: sticky; z-index: 1; top: -14px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 5px 8px; padding: 8px 0; background: white; color: #9499a0; font-size: 12px; }
+.bdf-coverage { padding: 1px 5px; border-radius: 4px; background: #fff7e6; color: #b26a00; font-size: 11px; }
+.bdf-coverage-complete { background: #ecf8f1; color: #278553; }
 .bdf-result { min-width: 0; max-width: 100%; padding: 11px 0; overflow: hidden; border-top: 1px solid #eee; }
 .bdf-author-row { display: flex; align-items: center; gap: 9px; }
 .bdf-avatar { width: 34px; height: 34px; flex: 0 0 34px; border-radius: 50%; background: #f1f2f3; object-fit: cover; }
 .bdf-author-info { min-width: 0; }
 .bdf-author { overflow: hidden; color: #18191c; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .bdf-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: #9499a0; font-size: 12px; }
-.bdf-duration { padding: 1px 5px; border-radius: 4px; background: #f1f2f3; color: #61666d; font-size: 11px; font-weight: 500; line-height: 1.5; }
+.bdf-duration, .bdf-image-count { padding: 1px 5px; border-radius: 4px; background: #f1f2f3; color: #61666d; font-size: 11px; font-weight: 500; line-height: 1.5; }
 .bdf-title-row { display: flex; align-items: flex-start; gap: 6px; margin-top: 4px; }
 .bdf-title { min-width: 0; overflow-wrap: anywhere; color: #18191c; font-weight: 600; }
 .bdf-charge-badge { flex: 0 0 auto; margin-top: 1px; padding: 1px 5px; border-radius: 4px; background: #fff0f4; color: #fb7299; font-size: 11px; font-weight: 600; line-height: 1.5; }
