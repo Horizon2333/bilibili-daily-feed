@@ -26,6 +26,7 @@
   };
   let mutationTimer = null;
   let resizeSaveTimer = null;
+  let statusHideTimer = null;
   let panelPrefsReady = false;
   const pendingAddedNodes = new Set();
   const liveCards = new Map();
@@ -81,7 +82,7 @@
         <button id="bdf-load" class="bdf-primary">加载这一天</button>
         <button id="bdf-stop" disabled>停止</button>
       </div>
-      <p id="bdf-status">选择日期后开始加载。</p>
+      <p id="bdf-status" hidden></p>
       <button id="bdf-retry" class="bdf-secondary" hidden>重新确认账号</button>
       <div id="bdf-results"></div>
       <details id="bdf-cache-manager">
@@ -306,9 +307,16 @@
   }
 
   function setStatus(message, tone, canRetry) {
+    clearTimeout(statusHideTimer);
     status.textContent = message;
     status.dataset.tone = tone || "normal";
+    status.hidden = !message;
     retryButton.hidden = !canRetry;
+    if (message && !canRetry && (!tone || ["normal", "success"].includes(tone))) {
+      statusHideTimer = setTimeout(() => {
+        status.hidden = true;
+      }, 4500);
+    }
   }
 
   const ALLOWED_HOST_SUFFIXES = ["bilibili.com", "hdslb.com", "biliimg.com"];
@@ -909,7 +917,10 @@
 
   loadButton.addEventListener("click", loadSelectedDay);
   stopButton.addEventListener("click", () => { state.stopRequested = true; });
-  dateInput.addEventListener("change", render);
+  dateInput.addEventListener("change", () => {
+    setStatus("");
+    render();
+  });
   filterButton.addEventListener("click", (event) => {
     event.stopPropagation();
     toggleToolMenu(filterButton, filterMenu);
@@ -990,7 +1001,7 @@
       state.ready = true;
       loadButton.disabled = false;
       render();
-      setStatus("选择日期后开始加载。", "normal");
+      setStatus("");
     } catch (error) {
       state.ready = false;
       loadButton.disabled = true;
