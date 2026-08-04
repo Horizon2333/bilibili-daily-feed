@@ -28,6 +28,15 @@
     return /充电(?:专属|专享|可见|抢先看)?/.test(compact) ? original : "";
   }
 
+  function extractVideoIdentity(value) {
+    const text = String(value || "");
+    const bvid = text.match(/(?:\/video\/|[?&]bvid=)(BV[0-9A-Za-z]+)/i)?.[1] || "";
+    const aid = text.match(/\/video\/av(\d+)/i)?.[1]
+      || text.match(/[?&](?:aid|oid)=(\d+)/i)?.[1]
+      || "";
+    return { aid, bvid };
+  }
+
   function extractApiVideoMeta(archive, additionalUgc) {
     const source = archive || {};
     const badgeTexts = [
@@ -44,5 +53,23 @@
     };
   }
 
-  return { normalizeDuration, normalizeBadgeText, extractApiVideoMeta };
+  function extractApiVideoInfo(major, additionalUgc) {
+    const sourceMajor = major || {};
+    const archive = sourceMajor.archive || {};
+    const ugcSeason = sourceMajor.ugc_season || {};
+    const isCollection = sourceMajor.type === "MAJOR_TYPE_UGC_SEASON" || Boolean(sourceMajor.ugc_season);
+    const source = Object.keys(archive).length ? archive : ugcSeason;
+    const linkIdentity = extractVideoIdentity(source.jump_url);
+    const meta = extractApiVideoMeta(source, additionalUgc);
+    return {
+      ...meta,
+      isVideo: sourceMajor.type === "MAJOR_TYPE_ARCHIVE" || isCollection || Boolean(source.aid || source.bvid),
+      isCollection,
+      collectionLabel: isCollection ? String(ugcSeason.badge?.text || "合集").trim().slice(0, 12) : "",
+      aid: String(source.aid || linkIdentity.aid || ""),
+      bvid: String(source.bvid || linkIdentity.bvid || "")
+    };
+  }
+
+  return { normalizeDuration, normalizeBadgeText, extractVideoIdentity, extractApiVideoMeta, extractApiVideoInfo };
 });

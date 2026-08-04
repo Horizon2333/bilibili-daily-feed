@@ -20,6 +20,16 @@
     accountKey: "",
     cache: {},
     coverage: {},
+    watchLater: {
+      accountKey: "",
+      aids: new Set(),
+      bvids: new Set(),
+      aidByBvid: new Map(),
+      loaded: false,
+      checking: false,
+      error: "",
+      checkedAt: 0
+    },
     seen: new Set(),
     lastOldestDay: null,
     unchangedRounds: 0
@@ -27,6 +37,8 @@
   let mutationTimer = null;
   let resizeSaveTimer = null;
   let statusHideTimer = null;
+  let watchLaterRefreshPromise = null;
+  let watchLaterRefreshId = 0;
   let panelPrefsReady = false;
   const pendingAddedNodes = new Set();
   const liveCards = new Map();
@@ -260,6 +272,20 @@
 
   function activateAccount(account) {
     const key = accountKey(account);
+    if (state.watchLater.accountKey !== key) {
+      state.watchLater = {
+        accountKey: key,
+        aids: new Set(),
+        bvids: new Set(),
+        aidByBvid: new Map(),
+        loaded: false,
+        checking: false,
+        error: "",
+        checkedAt: 0
+      };
+      watchLaterRefreshId += 1;
+      watchLaterRefreshPromise = null;
+    }
     const entry = ensureAccount(state.store, account, Date.now());
     state.account = account;
     state.accountKey = key;
@@ -363,6 +389,323 @@
     return apiImageUrl(value);
   }
 
+  function csrfToken() {
+    return document.cookie.match(/(?:^|;\s*)bili_jct=([^;]+)/)?.[1] || "";
+  }
+
+  function videoIdentity(item) {
+    const saved = { aid: String(item.aid || ""), bvid: String(item.bvid || "") };
+    if (/^\d+$/.test(saved.aid) || /^BV[0-9A-Za-z]+$/i.test(saved.bvid)) return saved;
+    return globalThis.BiliDailyVideoMeta.extractVideoIdentity(firstText(item.contentHref, item.dynamicHref));
+  }
+
+  function watchLaterError(payload) {
+    const knownErrors = {
+      "-101": "账号未登录",
+      "-111": "登录校验已失效，请刷新页面",
+      "-400": "B 站未接受这个视频",
+      "90001": "稍后再看列表已满",
+      "90003": "视频已被删除"
+    };
+    return knownErrors[String(payload?.code)] || payload?.message || `添加失败（${payload?.code || "未知错误"}）`;
+  }
+
+  function addWatchLaterFromBackground(identity, csrf) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: "bdf-add-watch-later", ...identity, csrf }, (response) => {
+        if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
+        else resolve(response || { ok: false, error: "扩展后台没有响应" });
+      });
+    });
+  }
+
+  function removeWatchLaterFromBackground(aid, csrf) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: "bdf-remove-watch-later", aid, csrf }, (response) => {
+        if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
+        else resolve(response || { ok: false, error: "扩展后台没有响应" });
+      });
+    });
+  }
+
+  function getWatchLaterFromBackground() {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: "bdf-get-watch-later" }, (response) => {
+        if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
+        else resolve(response || { ok: false, error: "扩展后台没有响应" });
+      });
+    });
+  }
+
+  function watchLaterIdsFromData(data) {
+    const items = Array.isArray(data?.list) ? data.list : [];
+    const videos = items.map((item) => ({ aid: String(item.aid || ""), bvid: String(item.bvid || "") }))
+      .filter((item) => /^\d+$/.test(item.aid) || /^BV[0-9A-Za-z]+$/i.test(item.bvid));
+    return {
+      ok: true,
+      aids: videos.map((item) => item.aid).filter((aid) => /^\d+$/.test(aid)),
+      bvids: videos.map((item) => item.bvid).filter((bvid) => /^BV[0-9A-Za-z]+$/i.test(bvid)),
+      videos
+    };
+  }
+
+  async function requestWatchLaterIds() {
+    try {
+      const response = await fetch("https://api.bilibili.com/x/v2/history/toview/web?jsonp=jsonp", {
+        credentials: "include",
+        headers: { "Accept": "application/json" }
+      });
+      if (!response.ok) throw new Error(`B 站接口返回 ${response.status}`);
+      const payload = await response.json();
+      if (payload.code !== 0 || !payload.data) throw new Error(watchLaterError(payload));
+      return watchLaterIdsFromData(payload.data);
+    } catch (_) {
+      return getWatchLaterFromBackground();
+    }
+  }
+
+  function isInWatchLater(identity) {
+    return (identity.aid && state.watchLater.aids.has(identity.aid))
+      || (identity.bvid && state.watchLater.bvids.has(identity.bvid));
+  }
+
+  function setWatchLaterButtonVisual(button, mode, message) {
+    const labels = {
+      checking: "正在检查稍后再看状态",
+      adding: "正在加入稍后再看",
+      removing: "正在从稍后再看移除",
+      added: "从稍后再看移除",
+      error: message || "添加失败，点击重试",
+      ready: message ? `${message}；仍可点击加入` : "加入稍后再看",
+      invalid: "无法识别视频编号"
+    };
+    button.dataset.state = mode;
+    button.disabled = ["checking", "adding", "removing", "invalid"].includes(mode);
+    button.title = labels[mode] || labels.ready;
+    button.setAttribute("aria-label", labels[mode] || labels.ready);
+  }
+
+  function syncWatchLaterButtons() {
+    panel.querySelectorAll(".bdf-watch-later").forEach((button) => {
+      if (["adding", "removing"].includes(button.dataset.state)) return;
+      const identity = {
+        aid: button.dataset.watchLaterAid || "",
+        bvid: button.dataset.watchLaterBvid || ""
+      };
+      if (!identity.aid && !identity.bvid) return setWatchLaterButtonVisual(button, "invalid");
+      if (state.watchLater.checking && !state.watchLater.loaded) return setWatchLaterButtonVisual(button, "checking");
+      if (isInWatchLater(identity)) return setWatchLaterButtonVisual(button, "added");
+      setWatchLaterButtonVisual(button, "ready", state.watchLater.error);
+    });
+  }
+
+  async function refreshWatchLaterStatus(force) {
+    if (!state.ready || !state.accountKey) return;
+    const now = Date.now();
+    if (watchLaterRefreshPromise) return watchLaterRefreshPromise;
+    if (!force && state.watchLater.checkedAt && now - state.watchLater.checkedAt < 30000) {
+      syncWatchLaterButtons();
+      return;
+    }
+    if (force && now - state.watchLater.checkedAt < 1500) return;
+
+    state.watchLater.checking = true;
+    state.watchLater.error = "";
+    syncWatchLaterButtons();
+    const refreshId = ++watchLaterRefreshId;
+    const refreshPromise = requestWatchLaterIds()
+      .then((response) => {
+        if (refreshId !== watchLaterRefreshId) return;
+        if (!response?.ok) throw new Error(response?.error || "无法读取稍后再看列表");
+        state.watchLater.aids = new Set(response.aids || []);
+        state.watchLater.bvids = new Set(response.bvids || []);
+        state.watchLater.aidByBvid = new Map((response.videos || [])
+          .filter((video) => /^\d+$/.test(video.aid) && /^BV[0-9A-Za-z]+$/i.test(video.bvid))
+          .map((video) => [video.bvid, video.aid]));
+        state.watchLater.loaded = true;
+        state.watchLater.checkedAt = Date.now();
+      })
+      .catch((error) => {
+        if (refreshId !== watchLaterRefreshId) return;
+        state.watchLater.error = error.message || "无法确认稍后再看状态";
+        state.watchLater.checkedAt = Date.now();
+      })
+      .finally(() => {
+        if (refreshId !== watchLaterRefreshId) return;
+        state.watchLater.checking = false;
+        watchLaterRefreshPromise = null;
+        syncWatchLaterButtons();
+      });
+    watchLaterRefreshPromise = refreshPromise;
+    return refreshPromise;
+  }
+
+  function createWatchLaterControl(item, overlay) {
+    const identity = videoIdentity(item);
+    const group = el("span", {
+      className: `bdf-watch-later-group${overlay ? " bdf-watch-later-overlay" : ""}`
+    });
+    const button = el("button", {
+      className: `bdf-watch-later${overlay ? " bdf-watch-later-cover-button" : ""}`,
+      type: "button",
+      "data-watch-later-aid": identity.aid,
+      "data-watch-later-bvid": identity.bvid
+    });
+    button.innerHTML = `
+      <svg class="bdf-watch-later-clock" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="8.5"></circle>
+        <path d="M12 7.5v5l3.5 2"></path>
+      </svg>
+      <svg class="bdf-watch-later-check" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="m6.5 12.5 3.4 3.4 7.7-8"></path>
+      </svg>
+      <span class="bdf-watch-later-text">稍后再看</span>`;
+    const feedback = el("span", { className: "bdf-watch-later-feedback", "aria-live": "polite" });
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleWatchLater(item, button, feedback);
+    });
+    group.append(button, feedback);
+    const mode = !identity.aid && !identity.bvid
+      ? "invalid"
+      : state.watchLater.checking && !state.watchLater.loaded
+        ? "checking"
+        : isInWatchLater(identity) ? "added" : "ready";
+    setWatchLaterButtonVisual(button, mode);
+    return group;
+  }
+
+  async function requestAddWatchLater(identity, csrf) {
+    const body = new URLSearchParams({ csrf });
+    if (identity.aid) body.set("aid", identity.aid);
+    else body.set("bvid", identity.bvid);
+    try {
+      const response = await fetch("https://api.bilibili.com/x/v2/history/toview/add", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+        },
+        body
+      });
+      if (!response.ok) throw new Error(`B 站接口返回 ${response.status}`);
+      const payload = await response.json();
+      return payload.code === 0 ? { ok: true } : { ok: false, error: watchLaterError(payload) };
+    } catch (_) {
+      // Content scripts follow the page's CORS policy. Keep the extension
+      // service worker as a fallback for browser configurations that block it.
+      return addWatchLaterFromBackground(identity, csrf);
+    }
+  }
+
+  async function requestRemoveWatchLater(aid, csrf) {
+    const body = new URLSearchParams({ aid, csrf });
+    try {
+      const response = await fetch("https://api.bilibili.com/x/v2/history/toview/del", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+        },
+        body
+      });
+      if (!response.ok) throw new Error(`B 站接口返回 ${response.status}`);
+      const payload = await response.json();
+      return payload.code === 0 ? { ok: true } : { ok: false, error: watchLaterError(payload) };
+    } catch (_) {
+      return removeWatchLaterFromBackground(aid, csrf);
+    }
+  }
+
+  async function removeWatchLater(item, button, feedback) {
+    const identity = videoIdentity(item);
+    const aid = /^\d+$/.test(identity.aid) ? identity.aid : state.watchLater.aidByBvid.get(identity.bvid) || "";
+    const csrf = csrfToken();
+    if (!aid) {
+      feedback.textContent = "无法识别 AV 号，请返回页面后重试";
+      setWatchLaterButtonVisual(button, "error", feedback.textContent);
+      return;
+    }
+    if (!csrf) {
+      feedback.textContent = "登录校验不可用";
+      setWatchLaterButtonVisual(button, "error", "无法获取登录校验信息，请刷新动态页");
+      return;
+    }
+
+    setWatchLaterButtonVisual(button, "removing");
+    feedback.textContent = "";
+    const response = await requestRemoveWatchLater(aid, csrf);
+    if (!response?.ok) {
+      setWatchLaterButtonVisual(button, "error", response?.error || "移除失败");
+      feedback.textContent = response?.error || "移除失败";
+      setStatus(response?.error || "从稍后再看移除失败", "error");
+      return;
+    }
+
+    state.watchLater.aids.delete(aid);
+    if (identity.bvid) {
+      state.watchLater.bvids.delete(identity.bvid);
+      state.watchLater.aidByBvid.delete(identity.bvid);
+    }
+    for (const [bvid, mappedAid] of state.watchLater.aidByBvid) {
+      if (mappedAid !== aid) continue;
+      state.watchLater.bvids.delete(bvid);
+      state.watchLater.aidByBvid.delete(bvid);
+    }
+    setWatchLaterButtonVisual(button, "ready");
+    syncWatchLaterButtons();
+    feedback.textContent = "已移除";
+    setTimeout(() => {
+      if (feedback.isConnected && button.dataset.state === "ready") feedback.textContent = "";
+    }, 1400);
+  }
+
+  function toggleWatchLater(item, button, feedback) {
+    return isInWatchLater(videoIdentity(item))
+      ? removeWatchLater(item, button, feedback)
+      : addWatchLater(item, button, feedback);
+  }
+
+  async function addWatchLater(item, button, feedback) {
+    const identity = videoIdentity(item);
+    const csrf = csrfToken();
+    if (!identity.aid && !identity.bvid) {
+      feedback.textContent = "无法识别视频编号";
+      setStatus("无法识别这个视频的 AV/BV 号，请先打开视频页面。", "error");
+      return;
+    }
+    if (!csrf) {
+      feedback.textContent = "登录校验不可用";
+      setStatus("无法获取登录校验信息，请重新登录或刷新动态页。", "error");
+      return;
+    }
+    setWatchLaterButtonVisual(button, "adding");
+    feedback.textContent = "";
+    const response = await requestAddWatchLater(identity, csrf);
+    if (!response?.ok) {
+      setWatchLaterButtonVisual(button, "error", response?.error || "添加稍后再看失败");
+      feedback.textContent = response?.error || "添加失败";
+      setStatus(response?.error || "添加稍后再看失败", "error");
+      return;
+    }
+    if (identity.aid) state.watchLater.aids.add(identity.aid);
+    if (identity.bvid) state.watchLater.bvids.add(identity.bvid);
+    if (identity.aid && identity.bvid) state.watchLater.aidByBvid.set(identity.bvid, identity.aid);
+    if (!identity.aid && identity.bvid) {
+      state.watchLater.checkedAt = 0;
+      await refreshWatchLaterStatus(true);
+    }
+    setWatchLaterButtonVisual(button, "added");
+    syncWatchLaterButtons();
+    feedback.textContent = "已加入";
+    setTimeout(() => {
+      if (feedback.isConnected && button.dataset.state === "added") feedback.textContent = "";
+    }, 1400);
+  }
+
   function renderCacheStats() {
     const account = state.store.accounts[state.accountKey];
     if (!account) {
@@ -421,6 +764,7 @@
     if (!raw?.id_str || !pubTimestamp) return null;
 
     const archive = major.archive || {};
+    const ugcSeason = major.ugc_season || {};
     const opus = major.opus || {};
     const draw = major.draw || {};
     const article = major.article || {};
@@ -437,6 +781,7 @@
     const descText = firstText(knownDescText, deepTextCandidates);
     const formalTitle = firstText(
       archive.title,
+      ugcSeason.title,
       article.title,
       opus.title,
       common.title
@@ -446,6 +791,7 @@
     const preview = contentPreview(descText, 320);
     const image = apiImageUrl(firstText(
       archive.cover,
+      ugcSeason.cover,
       opus.pics?.[0]?.url,
       draw.items?.[0]?.src,
       article.covers?.[0],
@@ -458,16 +804,19 @@
     );
     const contentHref = apiJumpUrl(firstText(
       archive.jump_url,
+      ugcSeason.jump_url,
       article.jump_url,
       opus.jump_url,
       common.jump_url,
       major.jump_url
     ));
-    const isVideo = raw.type === "DYNAMIC_TYPE_AV" || major.type === "MAJOR_TYPE_ARCHIVE" || Boolean(archive.bvid);
-    const videoMeta = globalThis.BiliDailyVideoMeta.extractApiVideoMeta(
-      archive,
+    const videoMeta = globalThis.BiliDailyVideoMeta.extractApiVideoInfo(
+      major,
       dynamicModule.additional && dynamicModule.additional.ugc
     );
+    const isVideo = raw.type === "DYNAMIC_TYPE_AV"
+      || raw.type === "DYNAMIC_TYPE_UGC_SEASON"
+      || videoMeta.isVideo;
     const published = new Date(pubTimestamp);
 
     return {
@@ -485,6 +834,10 @@
       isVideo,
       durationText: videoMeta.durationText,
       chargeLabel: videoMeta.chargeLabel,
+      isCollection: videoMeta.isCollection,
+      collectionLabel: videoMeta.collectionLabel,
+      aid: videoMeta.aid || String(raw.basic?.rid_str || ""),
+      bvid: videoMeta.bvid,
       pubTimestamp
     };
   }
@@ -638,7 +991,10 @@
       || card;
     const cardLinks = Array.from(card.querySelectorAll("a[href]"));
     const contentLinks = Array.from(contentRoot.querySelectorAll("a[href]"));
-    const videoLink = contentLinks.find((link) => /\/video\/BV/i.test(link.getAttribute("href") || ""));
+    const videoLink = contentLinks.find((link) => {
+      const identity = globalThis.BiliDailyVideoMeta.extractVideoIdentity(link.getAttribute("href"));
+      return Boolean(identity.aid || identity.bvid);
+    });
     const { dynamicId, dynamicHref } = findDynamicIdentity(card, cardLinks);
     const authorNode = card.querySelector(".bili-dyn-title__text, .bili-dyn-title, [class*='author']");
     const avatarNode = card.querySelector(".bili-dyn-item__avatar img, .bili-dyn-avatar img, [class*='avatar'] img");
@@ -650,7 +1006,8 @@
     const preview = contentPreview(contentText, 320);
     const images = findImages(contentRoot);
     const image = images[0] || "";
-    const isVideo = Boolean(videoLink) || /投稿了视频|发布了动态视频|联合创作/.test(cardText);
+    const isCollection = /合集|更新了合集/.test(cardText);
+    const isVideo = Boolean(videoLink) || isCollection || /投稿了视频|发布了动态视频|联合创作/.test(cardText);
     const videoRoot = videoLink?.closest(".bili-dyn-card-video, .bili-video-card, [class*='video']") || contentRoot;
     const durationText = Array.from(videoRoot.querySelectorAll(
       ".bili-dyn-card-video__duration, .bili-video-card__stats__duration, .duration-time, [class*='duration']"
@@ -662,11 +1019,13 @@
       const href = absoluteUrl(link.getAttribute("href"));
       return href && href !== dynamicHref && !/space\.bilibili\.com/.test(href);
     }))?.getAttribute("href"));
+    const identity = globalThis.BiliDailyVideoMeta.extractVideoIdentity(contentHref);
     const linkFingerprint = contentLinks.map((link) => absoluteUrl(link.getAttribute("href"))).filter(Boolean).join("|");
     const key = dynamicId || dynamicHref || fingerprint(`${formatDay(parsed)}|${timeText}|${author}|${contentText}|${image}|${linkFingerprint}`);
     return {
       key, day: formatDay(parsed), timeText, author, avatar, title, preview, image,
       imageCount: images.length, dynamicHref, contentHref, isVideo, durationText, chargeLabel,
+      isCollection, collectionLabel: isCollection ? "合集" : "", aid: identity.aid, bvid: identity.bvid,
       pubTimestamp: parsed.getTime()
     };
   }
@@ -751,6 +1110,9 @@
       if (item.durationText) {
         meta.append(el("span", { className: "bdf-duration", text: `时长 ${item.durationText}` }));
       }
+      if (item.isCollection) {
+        meta.append(el("span", { className: "bdf-collection-badge", text: item.collectionLabel || "合集" }));
+      }
       if (Number(item.imageCount) > 1) {
         meta.append(el("span", { className: "bdf-image-count", text: `共 ${item.imageCount} 张` }));
       }
@@ -768,6 +1130,7 @@
         const imageHref = item.isVideo
           ? firstText(item.contentHref, item.dynamicHref)
           : firstText(item.dynamicHref, item.contentHref);
+        let coverContent;
         if (imageHref) {
           const coverLink = el("a", {
             className: item.isVideo ? "bdf-cover-link bdf-video-cover-link" : "bdf-cover-link",
@@ -778,10 +1141,17 @@
             "aria-label": item.isVideo ? "打开视频" : "打开动态"
           });
           coverLink.append(cover);
-          card.append(coverLink);
+          coverContent = coverLink;
         } else {
           cover.classList.add("bdf-cover-standalone");
-          card.append(cover);
+          coverContent = cover;
+        }
+        if (item.isVideo) {
+          const coverWrap = el("div", { className: "bdf-video-cover-wrap" });
+          coverWrap.append(coverContent, createWatchLaterControl(item, true));
+          card.append(coverWrap);
+        } else {
+          card.append(coverContent);
         }
       }
       const validTitle = item.title && !/^(?:MAJOR|DYNAMIC|ADDITIONAL|MODULE)_TYPE_[A-Z0-9_]+$/.test(item.title);
@@ -799,6 +1169,7 @@
       if (item.contentHref && item.contentHref !== item.dynamicHref) {
         links.append(el("a", { href: item.contentHref, target: "_blank", rel: "noopener", text: item.isVideo ? "打开视频 →" : "打开内容 →" }));
       }
+      if (item.isVideo && !safeImage) links.append(createWatchLaterControl(item, false));
       if (!item.dynamicHref && liveCards.has(item.key)) {
         const locateButton = el("button", { className: "bdf-locate", type: "button", text: "定位原动态 →" });
         locateButton.addEventListener("click", () => {
@@ -813,6 +1184,7 @@
       if (links.childElementCount) card.append(links);
       results.append(card);
     });
+    void refreshWatchLaterStatus(false);
   }
 
   function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
@@ -920,6 +1292,7 @@
   dateInput.addEventListener("change", () => {
     setStatus("");
     render();
+    void refreshWatchLaterStatus(true);
   });
   filterButton.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -960,7 +1333,10 @@
       openButton?.focus();
     }
   });
-  panel.querySelector("#bdf-collapse").addEventListener("click", () => panel.classList.toggle("bdf-collapsed"));
+  panel.querySelector("#bdf-collapse").addEventListener("click", () => {
+    panel.classList.toggle("bdf-collapsed");
+    if (!panel.classList.contains("bdf-collapsed")) void refreshWatchLaterStatus(true);
+  });
   panel.querySelector("#bdf-clear").addEventListener("click", async () => {
     try {
       await refreshAccount();
@@ -1014,6 +1390,11 @@
 
   retryButton.addEventListener("click", initialize);
   initialize();
+
+  window.addEventListener("focus", () => void refreshWatchLaterStatus(true));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") void refreshWatchLaterStatus(true);
+  });
 
   // B站会成批插入动态卡片。监听新增节点可以在下一批渲染或虚拟列表
   // 回收节点之前完成采集，避免连续“动态 + 视频”时漏掉中间卡片。

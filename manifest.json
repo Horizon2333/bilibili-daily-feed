@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "B站动态按天看",
-  "version": "0.13.0",
-  "description": "按日期加载和整理 B 站关注动态，以标题和配图展示，可仅查看视频投稿。",
+  "version": "0.14.0",
+  "description": "按日期加载和整理 B 站关注动态，支持视频合集、稍后再看和本地缓存。",
   "icons": {
     "16": "assets/icons/icon-16.png",
     "32": "assets/icons/icon-32.png",

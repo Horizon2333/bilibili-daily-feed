@@ -1,9 +1,9 @@
 {
   "name": "bilibili-daily-feed",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "license": "MIT",
   "private": true,
   "scripts": {
-    "test": "node tests/date-parser.test.js && node tests/cache-store.test.js && node tests/video-meta.test.js"
+    "test": "node tests/date-parser.test.js && node tests/cache-store.test.js && node tests/video-meta.test.js && node tests/background.test.js"
   }
 }
