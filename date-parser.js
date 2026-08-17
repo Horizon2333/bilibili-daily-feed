@@ -17,6 +17,19 @@
     return `${year}-${month}-${day}`;
   }
 
+  function shiftDay(value, amount) {
+    const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return "";
+    const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
+    if (
+      date.getFullYear() !== Number(match[1])
+      || date.getMonth() !== Number(match[2]) - 1
+      || date.getDate() !== Number(match[3])
+    ) return "";
+    date.setDate(date.getDate() + Number(amount || 0));
+    return formatDay(date);
+  }
+
   function parseDynamicTime(text, nowValue) {
     if (!text) return null;
     const now = new Date(nowValue || Date.now());
@@ -48,7 +61,7 @@
     return startOfDay(tailDayValue).getTime() < startOfDay(targetDayValue).getTime();
   }
 
-  const api = { DAY_MS, formatDay, hasCrossedTargetDay, parseDynamicTime, startOfDay };
+  const api = { DAY_MS, formatDay, hasCrossedTargetDay, parseDynamicTime, shiftDay, startOfDay };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.BiliDailyDate = api;
 })(typeof globalThis !== "undefined" ? globalThis : window);
