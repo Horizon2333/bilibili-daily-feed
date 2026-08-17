@@ -23,9 +23,6 @@ async function saveAccountCache(message) {
   const store = BiliDailyCache.normalizeStore(await storageGet(CACHE_STORAGE_KEY));
   const account = BiliDailyCache.ensureAccount(store, message.account, Date.now());
   account.days = message.replace ? (message.days || {}) : BiliDailyCache.mergeDays(account.days, message.days);
-  account.coverage = message.replace
-    ? (message.coverage || {})
-    : BiliDailyCache.mergeCoverage(account.coverage, message.coverage);
   account.lastCleanedAt = Date.now();
   BiliDailyCache.pruneStore(store);
   await storageSet({ [CACHE_STORAGE_KEY]: store });

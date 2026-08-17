@@ -40,7 +40,7 @@
       face: String(profile.face || current.profile?.face || "")
     };
     current.days = current.days && typeof current.days === "object" ? current.days : {};
-    current.coverage = current.coverage && typeof current.coverage === "object" ? current.coverage : {};
+    delete current.coverage;
     current.lastAccessedAt = timestamp;
     store.accounts[key] = current;
     return current;
@@ -65,16 +65,6 @@
     return merged;
   }
 
-  function mergeCoverage(savedCoverage, incomingCoverage) {
-    const merged = { ...(savedCoverage || {}) };
-    Object.entries(incomingCoverage || {}).forEach(([day, record]) => {
-      if (!record || typeof record !== "object") return;
-      const saved = merged[day];
-      if (!saved || Number(record.updatedAt || 0) >= Number(saved.updatedAt || 0)) merged[day] = record;
-    });
-    return merged;
-  }
-
   function dayTimestamp(day) {
     const value = Date.parse(`${day}T00:00:00Z`);
     return Number.isFinite(value) ? value : 0;
@@ -82,15 +72,11 @@
 
   function pruneAccount(account, policy, now) {
     account.days = account.days && typeof account.days === "object" ? account.days : {};
-    account.coverage = account.coverage && typeof account.coverage === "object" ? account.coverage : {};
+    delete account.coverage;
     const cutoff = Number(now) - policy.retentionDays * 86400000;
-    Object.keys(account.coverage).forEach((day) => {
-      if (dayTimestamp(day) < cutoff) delete account.coverage[day];
-    });
     Object.keys(account.days).forEach((day) => {
       if (!Array.isArray(account.days[day]) || dayTimestamp(day) < cutoff) {
         delete account.days[day];
-        delete account.coverage[day];
       }
     });
 
@@ -126,13 +112,12 @@
       ).sort((left, right) => left.time - right.time)[0];
       if (!oldest) break;
       delete store.accounts[oldest.key].days[oldest.day];
-      delete store.accounts[oldest.key].coverage[oldest.day];
     }
     return store;
   }
 
   return {
     SCHEMA_VERSION, DEFAULT_POLICY, createStore, normalizeStore, accountKey,
-    ensureAccount, estimateBytes, mergeDays, mergeCoverage, pruneStore
+    ensureAccount, estimateBytes, mergeDays, pruneStore
   };
 });

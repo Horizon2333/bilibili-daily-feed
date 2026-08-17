@@ -19,7 +19,6 @@
     account: null,
     accountKey: "",
     cache: {},
-    coverage: {},
     watchLater: {
       accountKey: "",
       aids: new Set(),
@@ -89,7 +88,6 @@
           </div>
         </div>
       </div>
-      <small id="bdf-account-note" class="bdf-account-note">账号：确认中…</small>
       <div class="bdf-actions">
         <button id="bdf-load" class="bdf-primary">加载这一天</button>
         <button id="bdf-stop" disabled>停止</button>
@@ -105,7 +103,8 @@
           <button id="bdf-clear" class="bdf-link">清除当前账号全部缓存</button>
         </div>
       </details>
-    </div>`;
+    </div>
+    <div id="bdf-resize-handle" role="separator" aria-label="调整工具大小" title="拖动调整大小"></div>`;
   document.documentElement.append(panel);
 
   const dateInput = panel.querySelector("#bdf-date");
@@ -118,9 +117,9 @@
   const status = panel.querySelector("#bdf-status");
   const retryButton = panel.querySelector("#bdf-retry");
   const cacheStats = panel.querySelector("#bdf-cache-stats");
-  const accountNote = panel.querySelector("#bdf-account-note");
   const results = panel.querySelector("#bdf-results");
   const panelHead = panel.querySelector(".bdf-head");
+  const resizeHandle = panel.querySelector("#bdf-resize-handle");
   let kindFilter = "all";
   let sortOrder = "oldest";
   dateInput.value = formatDay(Date.now());
@@ -210,6 +209,62 @@
   });
   panelResizeObserver.observe(panel);
 
+  resizeHandle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || panel.classList.contains("bdf-collapsed")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startRect = panel.getBoundingClientRect();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const pageX = window.scrollX;
+    const pageY = window.scrollY;
+    const scrollingElement = document.scrollingElement;
+    let ended = false;
+
+    const preventScroll = (scrollEvent) => scrollEvent.preventDefault();
+    const restorePageScroll = () => {
+      if (!scrollingElement || (window.scrollX === pageX && window.scrollY === pageY)) return;
+      scrollingElement.scrollLeft = pageX;
+      scrollingElement.scrollTop = pageY;
+    };
+    const onMove = (moveEvent) => {
+      moveEvent.preventDefault();
+      const maxWidth = Math.max(300, window.innerWidth - startRect.left - 8);
+      const maxHeight = Math.max(260, window.innerHeight - startRect.top - 8);
+      const width = Math.min(maxWidth, Math.max(300, startRect.width + moveEvent.clientX - startX));
+      const height = Math.min(maxHeight, Math.max(260, startRect.height + moveEvent.clientY - startY));
+      panel.style.width = `${Math.round(width)}px`;
+      panel.style.height = `${Math.round(height)}px`;
+      restorePageScroll();
+    };
+    const onEnd = () => {
+      if (ended) return;
+      ended = true;
+      panel.classList.remove("bdf-resizing");
+      resizeHandle.removeEventListener("pointermove", onMove);
+      resizeHandle.removeEventListener("pointerup", onEnd);
+      resizeHandle.removeEventListener("pointercancel", onEnd);
+      resizeHandle.removeEventListener("lostpointercapture", onEnd);
+      document.removeEventListener("wheel", preventScroll, true);
+      document.removeEventListener("touchmove", preventScroll, true);
+      window.removeEventListener("scroll", restorePageScroll);
+      window.removeEventListener("blur", onEnd);
+      restorePageScroll();
+      savePanelPrefs();
+    };
+
+    resizeHandle.setPointerCapture(event.pointerId);
+    panel.classList.add("bdf-resizing");
+    document.addEventListener("wheel", preventScroll, { capture: true, passive: false });
+    document.addEventListener("touchmove", preventScroll, { capture: true, passive: false });
+    window.addEventListener("scroll", restorePageScroll, { passive: true });
+    window.addEventListener("blur", onEnd);
+    resizeHandle.addEventListener("pointermove", onMove);
+    resizeHandle.addEventListener("pointerup", onEnd);
+    resizeHandle.addEventListener("pointercancel", onEnd);
+    resizeHandle.addEventListener("lostpointercapture", onEnd);
+  });
+
   panelHead.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || event.target.closest("button, a")) return;
     const startRect = panel.getBoundingClientRect();
@@ -290,21 +345,17 @@
     state.account = account;
     state.accountKey = key;
     state.cache = entry.days;
-    state.coverage = entry.coverage;
     state.seen = new Set(Object.values(state.cache).flat().map((item) => item.key));
-    accountNote.textContent = `账号：${account.name || `UID ${key}`}`;
   }
 
   async function storageSet(replace) {
     if (!state.accountKey) throw new Error("当前账号尚未初始化");
     const entry = ensureAccount(state.store, state.account, Date.now());
     entry.days = state.cache;
-    entry.coverage = state.coverage;
     const response = await new Promise((resolve, reject) => chrome.runtime.sendMessage({
       type: "bdf-save-cache",
       account: state.account,
       days: state.cache,
-      coverage: state.coverage,
       replace: Boolean(replace)
     }, (result) => {
       if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
@@ -313,7 +364,6 @@
     if (!response?.ok) throw new Error(response?.error || "缓存保存失败");
     state.store = normalizeStore(response.store);
     state.cache = state.store.accounts[state.accountKey]?.days || {};
-    state.coverage = state.store.accounts[state.accountKey]?.coverage || {};
     renderCacheStats();
   }
 
@@ -387,6 +437,22 @@
   function apiJumpUrl(value) {
     if (!value || /^bilibili:\/\//i.test(value)) return "";
     return apiImageUrl(value);
+  }
+
+  function authorMidFromSpaceHref(value) {
+    const href = absoluteUrl(value);
+    if (!href) return "";
+    try {
+      const url = new URL(href);
+      if (url.hostname !== "space.bilibili.com") return "";
+      const mid = url.pathname.match(/^\/(\d+)(?:\/|$)/)?.[1] || "";
+      return mid !== "0" ? mid : "";
+    } catch (_) { return ""; }
+  }
+
+  function authorSpaceHref(value) {
+    const mid = String(value || "");
+    return /^\d+$/.test(mid) && mid !== "0" ? `https://space.bilibili.com/${mid}` : "";
   }
 
   function csrfToken() {
@@ -818,12 +884,16 @@
       || raw.type === "DYNAMIC_TYPE_UGC_SEASON"
       || videoMeta.isVideo;
     const published = new Date(pubTimestamp);
+    const authorMid = (/^\d+$/.test(String(authorModule.mid || "")) && String(authorModule.mid) !== "0")
+      ? String(authorModule.mid)
+      : authorMidFromSpaceHref(authorModule.jump_url);
 
     return {
       key: raw.id_str,
       day: formatDay(published),
       timeText: published.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }),
       author: firstText(authorModule.name, "未知账号"),
+      authorMid,
       avatar: apiImageUrl(authorModule.face),
       title,
       preview,
@@ -998,9 +1068,14 @@
     const { dynamicId, dynamicHref } = findDynamicIdentity(card, cardLinks);
     const authorNode = card.querySelector(".bili-dyn-title__text, .bili-dyn-title, [class*='author']");
     const avatarNode = card.querySelector(".bili-dyn-item__avatar img, .bili-dyn-avatar img, [class*='avatar'] img");
+    const authorLink = authorNode?.closest("a[href]")
+      || avatarNode?.closest("a[href]")
+      || card.querySelector(".bili-dyn-item__header a[href*='space.bilibili.com'], a.bili-dyn-title[href*='space.bilibili.com']")
+      || cardLinks.find((link) => /space\.bilibili\.com/.test(link.getAttribute("href") || ""));
     const cardText = (card.innerText || "").replace(/\n{3,}/g, "\n\n").trim();
     const contentText = (contentRoot.innerText || "").replace(/\n{3,}/g, "\n\n").trim();
     const author = (authorNode && authorNode.textContent || cardText.split("\n")[0] || "未知账号").trim();
+    const authorMid = authorMidFromSpaceHref(authorLink?.getAttribute("href"));
     const avatar = avatarNode ? apiImageUrl(avatarNode.currentSrc || avatarNode.src || avatarNode.getAttribute("data-src") || "") : "";
     const title = findTitle(contentRoot, videoLink, author, timeText);
     const preview = contentPreview(contentText, 320);
@@ -1023,7 +1098,7 @@
     const linkFingerprint = contentLinks.map((link) => absoluteUrl(link.getAttribute("href"))).filter(Boolean).join("|");
     const key = dynamicId || dynamicHref || fingerprint(`${formatDay(parsed)}|${timeText}|${author}|${contentText}|${image}|${linkFingerprint}`);
     return {
-      key, day: formatDay(parsed), timeText, author, avatar, title, preview, image,
+      key, day: formatDay(parsed), timeText, author, authorMid, avatar, title, preview, image,
       imageCount: images.length, dynamicHref, contentHref, isVideo, durationText, chargeLabel,
       isCollection, collectionLabel: isCollection ? "合集" : "", aid: identity.aid, bvid: identity.bvid,
       pubTimestamp: parsed.getTime()
@@ -1050,25 +1125,6 @@
     return items;
   }
 
-  function setCoverage(day, complete, source, reason, scanned) {
-    state.coverage[day] = {
-      complete: Boolean(complete),
-      source,
-      reason,
-      scanned: Number(scanned) || 0,
-      updatedAt: Date.now()
-    };
-  }
-
-  function coverageText(record) {
-    if (!record) return "完整度：尚未确认";
-    const source = record.source === "api" ? "接口读取" : "页面扫描";
-    if (record.complete) return `完整度：已完整读取 · ${source}`;
-    if (record.reason === "stopped") return `完整度：已停止，可能不完整 · ${source}`;
-    if (record.reason === "error") return `完整度：加载中断，可能不完整 · ${source}`;
-    return `完整度：未越过目标日期，可能不完整 · ${source}`;
-  }
-
   function render() {
     const day = dateInput.value;
     const kind = kindFilter;
@@ -1086,12 +1142,8 @@
     renderCacheStats();
     results.replaceChildren();
     const summary = el("div", { className: "bdf-summary" });
-    summary.append(el("span", { text: `${day} · ${items.length} 条${kind === "video" ? "视频" : "动态"}` }));
-    const coverage = state.coverage[day];
-    summary.append(el("span", {
-      className: `bdf-coverage ${coverage?.complete ? "bdf-coverage-complete" : "bdf-coverage-partial"}`,
-      text: coverageText(coverage)
-    }));
+    const accountName = state.account?.name || (state.accountKey ? `UID ${state.accountKey}` : "未登录");
+    summary.append(el("span", { text: `账号：${accountName} · ${day} · ${items.length} 条${kind === "video" ? "视频" : "动态"}` }));
     results.append(summary);
     if (!items.length) {
       results.append(el("div", { className: "bdf-empty", text: "尚未收集到这一天的内容。" }));
@@ -1102,9 +1154,29 @@
       const authorRow = el("div", { className: "bdf-author-row" });
       const safeAvatar = apiImageUrl(item.avatar);
       const safeImage = apiImageUrl(item.image);
-      if (safeAvatar) authorRow.append(el("img", { className: "bdf-avatar", src: safeAvatar, alt: "", loading: "lazy", referrerpolicy: "no-referrer" }));
+      const authorHref = authorSpaceHref(item.authorMid);
+      const authorName = item.author || "未知账号";
+      if (safeAvatar) {
+        const avatar = el("img", { className: "bdf-avatar", src: safeAvatar, alt: "", loading: "lazy", referrerpolicy: "no-referrer" });
+        if (authorHref) {
+          const avatarLink = el("a", {
+            className: "bdf-avatar-link",
+            href: authorHref,
+            target: "_blank",
+            rel: "noopener",
+            title: `打开 ${authorName} 的主页`,
+            "aria-label": `打开 ${authorName} 的主页`
+          });
+          avatarLink.append(avatar);
+          authorRow.append(avatarLink);
+        } else {
+          authorRow.append(avatar);
+        }
+      }
       const authorInfo = el("div", { className: "bdf-author-info" });
-      authorInfo.append(el("div", { className: "bdf-author", text: item.author || "未知账号" }));
+      authorInfo.append(authorHref
+        ? el("a", { className: "bdf-author bdf-author-link", href: authorHref, target: "_blank", rel: "noopener", text: authorName, title: `打开 ${authorName} 的主页` })
+        : el("div", { className: "bdf-author", text: authorName }));
       const meta = el("div", { className: "bdf-meta" });
       meta.append(document.createTextNode(`${item.timeText}${item.isVideo ? " · 视频" : ""}`));
       if (item.durationText) {
@@ -1206,21 +1278,12 @@
     const target = startOfDay(`${dateInput.value}T00:00:00`).getTime();
     let previousCount = document.querySelectorAll(CARD_SELECTOR).length;
     let rounds = 0;
-    let pageCrossed = false;
 
     setStatus("正在通过 B 站动态接口读取…", "working");
 
     try {
       try {
         const apiResult = await loadSelectedDayFromApi(target);
-        const apiComplete = !state.stopRequested && (apiResult.crossed || apiResult.exhausted);
-        setCoverage(
-          dateInput.value,
-          apiComplete,
-          "api",
-          state.stopRequested ? "stopped" : apiComplete ? (apiResult.crossed ? "crossed" : "exhausted") : "boundary",
-          apiResult.scanned
-        );
         await storageSet();
         const found = (state.cache[dateInput.value] || []).length;
         if (state.stopRequested) setStatus(`已停止，已缓存 ${found} 条当天动态。`, "normal");
@@ -1245,7 +1308,6 @@
         // forwarded card near the top. Selecting 06-18 therefore keeps loading
         // until the bottom of the feed has crossed into 06-17 (or earlier).
         if (tailDay !== null && hasCrossedTargetDay(tailDay, target)) {
-          pageCrossed = true;
           break;
         }
 
@@ -1261,14 +1323,6 @@
         setStatus(`已扫描 ${count} 条，列表末尾 ${oldestLabel}…`, "working");
         if (state.unchangedRounds >= 8) break;
       }
-      const pageComplete = !state.stopRequested && pageCrossed;
-      setCoverage(
-        dateInput.value,
-        pageComplete,
-        "page",
-        state.stopRequested ? "stopped" : pageComplete ? "crossed" : "boundary",
-        previousCount
-      );
       await storageSet();
       render();
       const found = (state.cache[dateInput.value] || []).length;
@@ -1276,7 +1330,6 @@
       else if (state.unchangedRounds >= 8) setStatus(`页面不再加载；当天共缓存 ${found} 条。`, "normal");
       else setStatus(`已越过目标日期；当天共缓存 ${found} 条。`, "success");
     } catch (error) {
-      setCoverage(dateInput.value, false, "page", "error", previousCount);
       try { await storageSet(); } catch (_) { /* Keep the original loading error. */ }
       render();
       setStatus(`加载中断：${error.message || "页面发生变化"}`, "error");
@@ -1341,7 +1394,6 @@
     try {
       await refreshAccount();
       state.cache = {};
-      state.coverage = {};
       state.seen.clear();
       await storageSet(true);
       render();
@@ -1357,7 +1409,6 @@
       const day = dateInput.value;
       const removed = (state.cache[day] || []).length;
       delete state.cache[day];
-      delete state.coverage[day];
       await storageSet(true);
       render();
       setStatus(removed ? `已清除 ${day} 的 ${removed} 条缓存。` : `${day} 没有缓存。`, "normal");
@@ -1381,7 +1432,6 @@
     } catch (error) {
       state.ready = false;
       loadButton.disabled = true;
-      accountNote.textContent = "账号：未登录";
       setStatus(error.message || "初始化失败", "error", true);
     } finally {
       retryButton.disabled = false;
