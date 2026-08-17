@@ -1,8 +1,11 @@
 "use strict";
 
-importScripts("cache-store.js");
+importScripts("cache-store.js", "update-checker.js");
 
 const CACHE_STORAGE_KEY = "biliDailyFeedStoreV1";
+const UPDATE_CACHE_STORAGE_KEY = "biliDailyFeedUpdateCacheV1";
+const UPDATE_CACHE_MAX_AGE = 6 * 60 * 60 * 1000;
+const LATEST_RELEASE_URL = "https://api.github.com/repos/Horizon2333/bilibili-daily-feed/releases/latest";
 let cacheWriteQueue = Promise.resolve();
 
 function storageGet(key) {
@@ -23,7 +26,20 @@ async function saveAccountCache(message) {
   const store = BiliDailyCache.normalizeStore(await storageGet(CACHE_STORAGE_KEY));
   const account = BiliDailyCache.ensureAccount(store, message.account, Date.now());
   account.days = message.replace ? (message.days || {}) : BiliDailyCache.mergeDays(account.days, message.days);
+  const selectedDay = BiliDailyCache.normalizeDay(message.selectedDay);
+  if (selectedDay) account.lastSelectedDay = selectedDay;
   account.lastCleanedAt = Date.now();
+  BiliDailyCache.pruneStore(store);
+  await storageSet({ [CACHE_STORAGE_KEY]: store });
+  return store;
+}
+
+async function saveSelectedDay(message) {
+  const selectedDay = BiliDailyCache.normalizeDay(message.selectedDay);
+  if (!selectedDay) throw new Error("选择的日期格式无效");
+  const store = BiliDailyCache.normalizeStore(await storageGet(CACHE_STORAGE_KEY));
+  const account = BiliDailyCache.ensureAccount(store, message.account, Date.now());
+  account.lastSelectedDay = selectedDay;
   BiliDailyCache.pruneStore(store);
   await storageSet({ [CACHE_STORAGE_KEY]: store });
   return store;
@@ -35,6 +51,37 @@ async function getJson(url) {
   const payload = await response.json();
   if (payload.code !== 0 || !payload.data) throw new Error(payload.message || "B 站接口不可用");
   return payload.data;
+}
+
+async function fetchLatestRelease() {
+  const response = await fetch(LATEST_RELEASE_URL, {
+    cache: "no-store",
+    credentials: "omit",
+    headers: {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28"
+    }
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.message || `GitHub 更新接口返回 ${response.status}`);
+  return BiliDailyUpdate.normalizeRelease(payload);
+}
+
+async function checkForUpdate(force) {
+  const now = Date.now();
+  const cached = await storageGet(UPDATE_CACHE_STORAGE_KEY);
+  let release = !force && cached && now - Number(cached.checkedAt) < UPDATE_CACHE_MAX_AGE
+    ? BiliDailyUpdate.normalizeStoredRelease(cached.release)
+    : null;
+  let checkedAt = Number(cached?.checkedAt) || 0;
+
+  if (!release) {
+    release = await fetchLatestRelease();
+    checkedAt = now;
+    await storageSet({ [UPDATE_CACHE_STORAGE_KEY]: { checkedAt, release } });
+  }
+
+  return BiliDailyUpdate.createUpdateResult(release, chrome.runtime.getManifest().version, checkedAt);
 }
 
 async function addToWatchLater(message) {
@@ -111,6 +158,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => sendResponse({ ok: false, error: error.message || "缓存保存失败" }));
     return true;
   }
+  if (message?.type === "bdf-save-selected-day") {
+    const operation = cacheWriteQueue.then(() => saveSelectedDay(message));
+    cacheWriteQueue = operation.catch(() => undefined);
+    operation
+      .then((store) => sendResponse({ ok: true, store }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || "续看日期保存失败" }));
+    return true;
+  }
   if (message?.type === "bdf-get-account") {
     getJson("https://api.bilibili.com/x/web-interface/nav")
       .then((data) => sendResponse({
@@ -118,6 +173,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         account: { isLogin: Boolean(data.isLogin), mid: String(data.mid || ""), name: data.uname || "", face: data.face || "" }
       }))
       .catch((error) => sendResponse({ ok: false, error: error.message || "无法确认登录账号" }));
+    return true;
+  }
+  if (message?.type === "bdf-check-update") {
+    checkForUpdate(Boolean(message.force))
+      .then((update) => sendResponse({ ok: true, update }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || "检查更新失败" }));
     return true;
   }
   if (message?.type === "bdf-add-watch-later") {

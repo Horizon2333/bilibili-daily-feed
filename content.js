@@ -4,8 +4,8 @@
   const isMainDynamicPage = location.hostname === "t.bilibili.com" && location.pathname === "/";
   if (window.top !== window || !isMainDynamicPage || document.getElementById("bdf-panel")) return;
 
-  const { formatDay, hasCrossedTargetDay, parseDynamicTime, startOfDay } = globalThis.BiliDailyDate;
-  const { createStore, normalizeStore, accountKey, ensureAccount, estimateBytes } = globalThis.BiliDailyCache;
+  const { formatDay, hasCrossedTargetDay, parseDynamicTime, shiftDay, startOfDay } = globalThis.BiliDailyDate;
+  const { createStore, normalizeStore, accountKey, ensureAccount, estimateBytes, normalizeDay } = globalThis.BiliDailyCache;
   const STORAGE_KEY = "biliDailyFeedStoreV1";
   const LEGACY_CACHE_KEYS = Array.from({ length: 10 }, (_, index) => `biliDailyFeedCacheV${index + 1}`);
   const PANEL_PREFS_KEY = "biliDailyFeedPanelPrefsV1";
@@ -30,6 +30,7 @@
       checkedAt: 0
     },
     seen: new Set(),
+    diagnostics: new Map(),
     lastOldestDay: null,
     unchangedRounds: 0
   };
@@ -53,18 +54,31 @@
     return node;
   }
 
+  const currentVersion = chrome.runtime.getManifest().version;
   const panel = el("aside", { id: "bdf-panel" });
   panel.innerHTML = `
     <div class="bdf-head">
       <div class="bdf-head-title">
-        <strong>B站动态按天看 <span class="bdf-version">v${chrome.runtime.getManifest().version}</span></strong>
-        <small><a href="https://github.com/Horizon2333" target="_blank" rel="noopener">作者：Horizon2333</a><span>·</span><a href="https://github.com/Horizon2333/bilibili-daily-feed/releases/latest" target="_blank" rel="noopener">检查更新</a></small>
+        <strong>B站动态按天看 <span class="bdf-version">v${currentVersion}</span></strong>
+        <small class="bdf-head-meta">
+          <a href="https://github.com/Horizon2333" target="_blank" rel="noopener">作者：Horizon2333</a><span>·</span>
+          <button id="bdf-check-update" class="bdf-update-check" type="button" title="当前版本 v${currentVersion}；点击检查更新">检查更新</button>
+          <a id="bdf-download-update" class="bdf-update-download" href="https://github.com/Horizon2333/bilibili-daily-feed/releases/latest" target="_blank" rel="noopener" hidden>下载更新</a>
+        </small>
       </div>
       <button id="bdf-collapse" title="收起">−</button>
     </div>
     <div class="bdf-body">
       <div class="bdf-query-row">
-        <label class="bdf-date-control">日期<input id="bdf-date" type="date"></label>
+        <div class="bdf-date-nav" role="group" aria-label="日期导航">
+          <button id="bdf-prev-day" class="bdf-date-step" type="button" title="前一天（Alt + ←）" aria-label="查看前一天">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 5-7 7 7 7"></path></svg>
+          </button>
+          <input id="bdf-date" type="date" aria-label="选择日期">
+          <button id="bdf-next-day" class="bdf-date-step" type="button" title="后一天（Alt + →）" aria-label="查看后一天">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 5 7 7-7 7"></path></svg>
+          </button>
+        </div>
         <div class="bdf-view-tools" role="group" aria-label="内容显示选项">
           <div class="bdf-tool-wrap">
             <button id="bdf-filter" class="bdf-tool-button" type="button" data-tooltip="内容过滤" aria-label="内容过滤：全部动态" aria-haspopup="menu" aria-expanded="false">
@@ -72,7 +86,9 @@
             </button>
             <div id="bdf-filter-menu" class="bdf-tool-menu" role="menu" hidden>
               <button type="button" role="menuitemradio" data-kind="all">全部动态</button>
-              <button type="button" role="menuitemradio" data-kind="video">仅视频</button>
+              <button type="button" role="menuitemradio" data-kind="video">视频</button>
+              <button type="button" role="menuitemradio" data-kind="graphic">图文</button>
+              <button type="button" role="menuitemradio" data-kind="other">其他</button>
             </div>
           </div>
           <div class="bdf-tool-wrap">
@@ -93,6 +109,7 @@
         <button id="bdf-stop" disabled>停止</button>
       </div>
       <p id="bdf-status" hidden></p>
+      <button id="bdf-copy-diagnostics" class="bdf-diagnostics" type="button" hidden>复制异常信息</button>
       <button id="bdf-retry" class="bdf-secondary" hidden>重新确认账号</button>
       <div id="bdf-results"></div>
       <details id="bdf-cache-manager">
@@ -108,6 +125,8 @@
   document.documentElement.append(panel);
 
   const dateInput = panel.querySelector("#bdf-date");
+  const previousDayButton = panel.querySelector("#bdf-prev-day");
+  const nextDayButton = panel.querySelector("#bdf-next-day");
   const filterButton = panel.querySelector("#bdf-filter");
   const sortButton = panel.querySelector("#bdf-sort");
   const filterMenu = panel.querySelector("#bdf-filter-menu");
@@ -115,15 +134,51 @@
   const loadButton = panel.querySelector("#bdf-load");
   const stopButton = panel.querySelector("#bdf-stop");
   const status = panel.querySelector("#bdf-status");
+  const copyDiagnosticsButton = panel.querySelector("#bdf-copy-diagnostics");
   const retryButton = panel.querySelector("#bdf-retry");
   const cacheStats = panel.querySelector("#bdf-cache-stats");
   const results = panel.querySelector("#bdf-results");
+  const updateCheckButton = panel.querySelector("#bdf-check-update");
+  const updateDownloadLink = panel.querySelector("#bdf-download-update");
+  const panelBody = panel.querySelector(".bdf-body");
   const panelHead = panel.querySelector(".bdf-head");
   const resizeHandle = panel.querySelector("#bdf-resize-handle");
   let kindFilter = "all";
   let sortOrder = "oldest";
   dateInput.value = formatDay(Date.now());
+  dateInput.max = formatDay(Date.now());
   loadButton.disabled = true;
+
+  function syncDateNavigation() {
+    const day = normalizeDay(dateInput.value);
+    const today = formatDay(Date.now());
+    dateInput.max = today;
+    dateInput.disabled = state.running || !state.ready;
+    previousDayButton.disabled = state.running || !state.ready || !day;
+    nextDayButton.disabled = state.running || !state.ready || !day || day >= today;
+    loadButton.disabled = state.running || !state.ready || !day;
+  }
+  syncDateNavigation();
+
+  function contentCategory(item) {
+    if (item?.isVideo) return "video";
+    if (item?.formatWarning) return "other";
+    const rawType = String(item?.rawType || "");
+    const majorType = String(item?.majorType || "");
+    if (["DYNAMIC_TYPE_WORD", "DYNAMIC_TYPE_DRAW", "DYNAMIC_TYPE_ARTICLE"].includes(rawType)) return "graphic";
+    if (["MAJOR_TYPE_NONE", "MAJOR_TYPE_OPUS", "MAJOR_TYPE_DRAW", "MAJOR_TYPE_ARTICLE"].includes(majorType)) return "graphic";
+    if (rawType || majorType) return "other";
+    return "graphic";
+  }
+
+  function selectedDayCounts() {
+    const counts = { total: 0, video: 0, graphic: 0, other: 0 };
+    (state.cache[dateInput.value] || []).forEach((item) => {
+      counts.total += 1;
+      counts[contentCategory(item)] += 1;
+    });
+    return counts;
+  }
 
   function clampPanelPosition(left, top) {
     const rect = panel.getBoundingClientRect();
@@ -134,14 +189,19 @@
   }
 
   function syncViewControls() {
-    const videoOnly = kindFilter === "video";
-    const filterLabel = videoOnly ? "内容过滤：仅视频" : "内容过滤：全部动态";
-    filterButton.classList.toggle("bdf-tool-active", videoOnly);
+    const filterNames = { all: "全部动态", video: "视频", graphic: "图文", other: "其他" };
+    const counts = selectedDayCounts();
+    const selectedFilterName = kindFilter === "all" ? filterNames.all : `仅${filterNames[kindFilter]}`;
+    const filterLabel = `内容过滤：${selectedFilterName}；当天共 ${counts.total} 条，视频 ${counts.video}，图文 ${counts.graphic}，其他 ${counts.other}`;
+    filterButton.classList.toggle("bdf-tool-active", kindFilter !== "all");
     filterButton.setAttribute("aria-label", filterLabel);
+    filterButton.dataset.tooltip = `内容过滤 · 共 ${counts.total} 条`;
     filterMenu.querySelectorAll("[data-kind]").forEach((option) => {
       const selected = option.dataset.kind === kindFilter;
       option.classList.toggle("bdf-menu-selected", selected);
       option.setAttribute("aria-checked", String(selected));
+      const countKey = option.dataset.kind === "all" ? "total" : option.dataset.kind;
+      option.textContent = `${filterNames[option.dataset.kind]}（${counts[countKey]}）`;
     });
 
     const sortLabel = sortOrder === "oldest" ? "排列顺序：从早到晚" : "排列顺序：从晚到早";
@@ -192,7 +252,7 @@
     if (Number.isFinite(prefs.width)) panel.style.width = `${Math.max(300, prefs.width)}px`;
     if (Number.isFinite(prefs.height)) panel.style.height = `${Math.max(260, prefs.height)}px`;
     if (["oldest", "newest"].includes(prefs.sort)) sortOrder = prefs.sort;
-    if (["all", "video"].includes(prefs.kind)) kindFilter = prefs.kind;
+    if (["all", "video", "graphic", "other"].includes(prefs.kind)) kindFilter = prefs.kind;
     syncViewControls();
     const initialLeft = Number.isFinite(prefs.left) ? prefs.left : window.innerWidth - panel.getBoundingClientRect().width - 18;
     const initialTop = Number.isFinite(prefs.top) ? prefs.top : 88;
@@ -316,6 +376,52 @@
     }));
   }
 
+  let updateCheckRunning = false;
+  async function checkForUpdates(force) {
+    if (updateCheckRunning) return;
+    updateCheckRunning = true;
+    updateCheckButton.disabled = true;
+    updateCheckButton.dataset.state = "checking";
+    updateCheckButton.textContent = "正在检查…";
+    updateCheckButton.title = `当前版本 v${currentVersion}`;
+    updateDownloadLink.hidden = true;
+
+    try {
+      const response = await new Promise((resolve, reject) => chrome.runtime.sendMessage({
+        type: "bdf-check-update",
+        force: Boolean(force)
+      }, (result) => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve(result);
+      }));
+      if (!response?.ok || !response.update) throw new Error(response?.error || "更新接口没有返回版本信息");
+
+      const update = response.update;
+      if (update.updateAvailable) {
+        const targetUrl = update.downloadUrl || update.releaseUrl;
+        if (!/^https:\/\/github\.com\/Horizon2333\/bilibili-daily-feed\/releases\//.test(targetUrl || "")) {
+          throw new Error("新版下载地址无法确认");
+        }
+        updateCheckButton.dataset.state = "available";
+        updateCheckButton.textContent = `新版 v${update.latestVersion}`;
+        updateCheckButton.title = `当前版本 v${update.currentVersion}；最新版本 v${update.latestVersion}；点击重新检查`;
+        updateDownloadLink.href = targetUrl;
+        updateDownloadLink.hidden = false;
+      } else {
+        updateCheckButton.dataset.state = "latest";
+        updateCheckButton.textContent = "已是最新版";
+        updateCheckButton.title = `当前版本 v${update.currentVersion}；点击重新检查`;
+      }
+    } catch (error) {
+      updateCheckButton.dataset.state = "error";
+      updateCheckButton.textContent = "检查失败，重试";
+      updateCheckButton.title = error.message || "检查更新失败";
+    } finally {
+      updateCheckButton.disabled = false;
+      updateCheckRunning = false;
+    }
+  }
+
   function getCurrentAccount() {
     return new Promise((resolve, reject) => chrome.runtime.sendMessage({ type: "bdf-get-account" }, (response) => {
       if (chrome.runtime.lastError) reject(new Error(`扩展后台暂时不可用：${chrome.runtime.lastError.message}`));
@@ -327,6 +433,7 @@
 
   function activateAccount(account) {
     const key = accountKey(account);
+    const accountChanged = state.accountKey !== key;
     if (state.watchLater.accountKey !== key) {
       state.watchLater = {
         accountKey: key,
@@ -346,6 +453,13 @@
     state.accountKey = key;
     state.cache = entry.days;
     state.seen = new Set(Object.values(state.cache).flat().map((item) => item.key));
+    if (accountChanged) {
+      const rememberedDay = normalizeDay(entry.lastSelectedDay);
+      const today = formatDay(Date.now());
+      dateInput.value = rememberedDay && rememberedDay <= today ? rememberedDay : today;
+      panelBody.scrollTop = 0;
+    }
+    syncDateNavigation();
   }
 
   async function storageSet(replace) {
@@ -356,6 +470,7 @@
       type: "bdf-save-cache",
       account: state.account,
       days: state.cache,
+      selectedDay: dateInput.value,
       replace: Boolean(replace)
     }, (result) => {
       if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
@@ -365,6 +480,45 @@
     state.store = normalizeStore(response.store);
     state.cache = state.store.accounts[state.accountKey]?.days || {};
     renderCacheStats();
+  }
+
+  async function persistSelectedDay(day) {
+    const selectedDay = normalizeDay(day);
+    if (!selectedDay || !state.accountKey || !state.account) return;
+    const entry = ensureAccount(state.store, state.account, Date.now());
+    entry.lastSelectedDay = selectedDay;
+    const response = await new Promise((resolve, reject) => chrome.runtime.sendMessage({
+      type: "bdf-save-selected-day",
+      account: state.account,
+      selectedDay
+    }, (result) => {
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else resolve(result);
+    }));
+    if (!response?.ok) throw new Error(response?.error || "续看日期保存失败");
+  }
+
+  function selectDay(day, persist) {
+    const selectedDay = normalizeDay(day);
+    const today = formatDay(Date.now());
+    if (!selectedDay || selectedDay > today || state.running) {
+      const rememberedDay = normalizeDay(state.store.accounts[state.accountKey]?.lastSelectedDay);
+      dateInput.value = rememberedDay && rememberedDay <= today ? rememberedDay : today;
+      syncDateNavigation();
+      return;
+    }
+    dateInput.value = selectedDay;
+    panelBody.scrollTop = 0;
+    copyDiagnosticsButton.hidden = true;
+    setStatus("");
+    render();
+    syncDateNavigation();
+    void refreshWatchLaterStatus(true);
+    if (persist && state.ready) {
+      void persistSelectedDay(selectedDay).catch((error) => {
+        setStatus(`日期已切换，但续看位置保存失败：${error.message}`, "error");
+      });
+    }
   }
 
   async function refreshAccount() {
@@ -393,6 +547,74 @@
         status.hidden = true;
       }, 4500);
     }
+  }
+
+  function resetApiDiagnostics() {
+    state.diagnostics.clear();
+    copyDiagnosticsButton.hidden = true;
+  }
+
+  function recordApiDiagnostic(raw, item, page, index, explicitReason) {
+    const dynamicId = String(raw?.id_str || "");
+    const dynamicType = String(raw?.type || "未知");
+    const majorType = String(raw?.modules?.module_dynamic?.major?.type || "无");
+    let reason = explicitReason || item?.formatWarning || "";
+    if (!item && !explicitReason) {
+      const missing = [];
+      if (!dynamicId) missing.push("动态 ID");
+      if (!Number(raw?.modules?.module_author?.pub_ts || 0) && !parseDynamicTime(raw?.modules?.module_author?.pub_time)) {
+        missing.push("发布时间");
+      }
+      reason = missing.length ? `缺少${missing.join("和")}` : "动态结构无法解析";
+    }
+    if (!reason) return;
+    const key = dynamicId || `${page}:${index}:${dynamicType}:${majorType}`;
+    state.diagnostics.set(key, { dynamicId, dynamicType, majorType, day: item?.day || "", page, index, reason });
+  }
+
+  function setFinalLoadStatus(message, tone) {
+    const count = state.diagnostics.size;
+    copyDiagnosticsButton.hidden = count === 0;
+    if (count) {
+      setStatus(`${message} 检测到 ${count} 条格式异常，已尽量保留可用入口。`, "warning");
+    } else {
+      setStatus(message, tone);
+    }
+  }
+
+  function diagnosticsText() {
+    const lines = [
+      "B站动态按天看 · 解析异常信息",
+      `扩展版本：v${currentVersion}`,
+      `目标日期：${dateInput.value || "未知"}`,
+      `生成时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
+      "说明：以下内容不包含 Cookie、账号信息或动态正文。",
+      ""
+    ];
+    Array.from(state.diagnostics.values()).forEach((item, index) => {
+      lines.push(
+        `${index + 1}. ${item.reason}`,
+        `   动态 ID：${item.dynamicId || "缺失"}`,
+        `   所属日期：${item.day || "无法判断"}`,
+        `   动态类型：${item.dynamicType}`,
+        `   主内容类型：${item.majorType}`,
+        `   接口页码：${item.page + 1}，页内序号：${item.index + 1}`
+      );
+    });
+    return lines.join("\n");
+  }
+
+  async function copyText(value) {
+    if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
+    const textarea = el("textarea", { "aria-hidden": "true" });
+    textarea.value = value;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.documentElement.append(textarea);
+    textarea.select();
+    const copied = document.execCommand("copy");
+    textarea.remove();
+    if (!copied) throw new Error("浏览器拒绝了复制操作");
   }
 
   const ALLOWED_HOST_SUFFIXES = ["bilibili.com", "hdslb.com", "biliimg.com"];
@@ -822,12 +1044,25 @@
     });
   }
 
+  const SUPPORTED_MAJOR_TYPES = new Set([
+    "MAJOR_TYPE_NONE",
+    "MAJOR_TYPE_ARCHIVE",
+    "MAJOR_TYPE_UGC_SEASON",
+    "MAJOR_TYPE_OPUS",
+    "MAJOR_TYPE_DRAW",
+    "MAJOR_TYPE_ARTICLE",
+    "MAJOR_TYPE_COMMON"
+  ]);
+
   function normalizeApiItem(raw) {
     const authorModule = raw?.modules?.module_author || {};
     const dynamicModule = raw?.modules?.module_dynamic || {};
     const major = dynamicModule.major || {};
-    const pubTimestamp = Number(authorModule.pub_ts || 0) * 1000;
-    if (!raw?.id_str || !pubTimestamp) return null;
+    const dynamicId = String(raw?.id_str || "");
+    const standardTimestamp = Number(authorModule.pub_ts || 0);
+    const inferredPublished = standardTimestamp ? null : parseDynamicTime(authorModule.pub_time);
+    const pubTimestamp = standardTimestamp * 1000 || inferredPublished?.getTime() || 0;
+    if (!dynamicId || !pubTimestamp) return null;
 
     const archive = major.archive || {};
     const ugcSeason = major.ugc_season || {};
@@ -884,14 +1119,21 @@
       || raw.type === "DYNAMIC_TYPE_UGC_SEASON"
       || videoMeta.isVideo;
     const published = new Date(pubTimestamp);
+    const rawType = String(raw.type || "");
+    const majorType = String(major.type || "");
+    const formatWarnings = [];
+    if (!standardTimestamp) formatWarnings.push("缺少标准发布时间，日期由显示文本推断");
+    if (majorType && !SUPPORTED_MAJOR_TYPES.has(majorType)) formatWarnings.push(`暂未完整适配 ${majorType}`);
     const authorMid = (/^\d+$/.test(String(authorModule.mid || "")) && String(authorModule.mid) !== "0")
       ? String(authorModule.mid)
       : authorMidFromSpaceHref(authorModule.jump_url);
 
     return {
-      key: raw.id_str,
+      key: dynamicId,
       day: formatDay(published),
-      timeText: published.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }),
+      timeText: standardTimestamp
+        ? published.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })
+        : `${formatDay(published)} · 时间未知`,
       author: firstText(authorModule.name, "未知账号"),
       authorMid,
       avatar: apiImageUrl(authorModule.face),
@@ -899,15 +1141,58 @@
       preview,
       image,
       imageCount,
-      dynamicHref: `https://www.bilibili.com/opus/${raw.id_str}`,
+      dynamicHref: `https://www.bilibili.com/opus/${dynamicId}`,
       contentHref,
       isVideo,
       durationText: videoMeta.durationText,
       chargeLabel: videoMeta.chargeLabel,
       isCollection: videoMeta.isCollection,
       collectionLabel: videoMeta.collectionLabel,
+      rawType,
+      majorType,
+      formatWarning: formatWarnings.join("；"),
       aid: videoMeta.aid || String(raw.basic?.rid_str || ""),
       bvid: videoMeta.bvid,
+      pubTimestamp
+    };
+  }
+
+  function fallbackApiItem(raw, reason) {
+    const authorModule = raw?.modules?.module_author || {};
+    const dynamicId = String(raw?.id_str || "");
+    const standardTimestamp = Number(authorModule.pub_ts || 0);
+    const inferredPublished = standardTimestamp ? null : parseDynamicTime(authorModule.pub_time);
+    const pubTimestamp = standardTimestamp * 1000 || inferredPublished?.getTime() || 0;
+    if (!dynamicId || !pubTimestamp) return null;
+    const published = new Date(pubTimestamp);
+    const authorMid = (/^\d+$/.test(String(authorModule.mid || "")) && String(authorModule.mid) !== "0")
+      ? String(authorModule.mid)
+      : authorMidFromSpaceHref(authorModule.jump_url);
+    return {
+      key: dynamicId,
+      day: formatDay(published),
+      timeText: standardTimestamp
+        ? published.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })
+        : `${formatDay(published)} · 时间未知`,
+      author: firstText(authorModule.name, "未知账号"),
+      authorMid,
+      avatar: apiImageUrl(authorModule.face),
+      title: "暂时无法解析的动态",
+      preview: "这条动态的格式暂未适配，请打开原动态查看。",
+      image: "",
+      imageCount: 0,
+      dynamicHref: `https://www.bilibili.com/opus/${dynamicId}`,
+      contentHref: "",
+      isVideo: raw?.type === "DYNAMIC_TYPE_AV",
+      durationText: "",
+      chargeLabel: "",
+      isCollection: false,
+      collectionLabel: "",
+      rawType: String(raw?.type || ""),
+      majorType: String(raw?.modules?.module_dynamic?.major?.type || ""),
+      formatWarning: reason || "动态结构无法解析",
+      aid: String(raw?.basic?.rid_str || ""),
+      bvid: "",
       pubTimestamp
     };
   }
@@ -944,7 +1229,19 @@
       if (knownOffsets.has(offset)) throw new Error("动态接口分页游标重复");
       knownOffsets.add(offset);
       const data = await fetchDynamicPage(offset);
-      const items = (data.items || []).map(normalizeApiItem).filter(Boolean);
+      const rawItems = Array.isArray(data.items) ? data.items : [];
+      const items = rawItems.map((raw, index) => {
+        try {
+          const item = normalizeApiItem(raw);
+          recordApiDiagnostic(raw, item, pages, index);
+          return item;
+        } catch (error) {
+          const reason = `解析失败：${error.message || "未知错误"}`;
+          const fallback = fallbackApiItem(raw, reason);
+          recordApiDiagnostic(raw, fallback, pages, index, reason);
+          return fallback;
+        }
+      }).filter(Boolean);
       items.forEach(upsertItem);
       scanned += items.length;
       pages += 1;
@@ -960,7 +1257,7 @@
         exhausted = true;
         break;
       }
-      if (!items.length) break;
+      if (!rawItems.length) break;
       offset = data.offset;
     }
 
@@ -1130,7 +1427,7 @@
     const kind = kindFilter;
     const direction = sortOrder === "newest" ? -1 : 1;
     const items = (state.cache[day] || [])
-      .filter((item) => kind === "all" || item.isVideo)
+      .filter((item) => kind === "all" || contentCategory(item) === kind)
       .map((item, index) => ({ item, index }))
       .sort((left, right) => {
         const leftTime = Number(left.item.pubTimestamp);
@@ -1139,11 +1436,13 @@
         return (right.index - left.index) * direction;
       })
       .map(({ item }) => item);
+    syncViewControls();
     renderCacheStats();
     results.replaceChildren();
     const summary = el("div", { className: "bdf-summary" });
     const accountName = state.account?.name || (state.accountKey ? `UID ${state.accountKey}` : "未登录");
-    summary.append(el("span", { text: `账号：${accountName} · ${day} · ${items.length} 条${kind === "video" ? "视频" : "动态"}` }));
+    const kindLabel = { all: "动态", video: "视频", graphic: "图文", other: "其他" }[kind] || "动态";
+    summary.append(el("span", { text: `账号：${accountName} · ${day} · ${items.length} 条${kindLabel}` }));
     results.append(summary);
     if (!items.length) {
       results.append(el("div", { className: "bdf-empty", text: "尚未收集到这一天的内容。" }));
@@ -1154,6 +1453,8 @@
       const authorRow = el("div", { className: "bdf-author-row" });
       const safeAvatar = apiImageUrl(item.avatar);
       const safeImage = apiImageUrl(item.image);
+      const dynamicHref = absoluteUrl(item.dynamicHref);
+      const contentHref = absoluteUrl(item.contentHref);
       const authorHref = authorSpaceHref(item.authorMid);
       const authorName = item.author || "未知账号";
       if (safeAvatar) {
@@ -1188,6 +1489,9 @@
       if (Number(item.imageCount) > 1) {
         meta.append(el("span", { className: "bdf-image-count", text: `共 ${item.imageCount} 张` }));
       }
+      if (item.formatWarning) {
+        meta.append(el("span", { className: "bdf-format-warning", text: "格式待适配", title: item.formatWarning }));
+      }
       authorInfo.append(meta);
       authorRow.append(authorInfo);
       card.append(authorRow);
@@ -1200,8 +1504,8 @@
           referrerpolicy: "no-referrer"
         });
         const imageHref = item.isVideo
-          ? firstText(item.contentHref, item.dynamicHref)
-          : firstText(item.dynamicHref, item.contentHref);
+          ? firstText(contentHref, dynamicHref)
+          : firstText(dynamicHref, contentHref);
         let coverContent;
         if (imageHref) {
           const coverLink = el("a", {
@@ -1233,16 +1537,18 @@
         : firstText(validPreview ? item.preview.split(/\n\s*\n|\n/)[0] : "", "无标题动态").slice(0, 180);
       const titleRow = el("div", { className: "bdf-title-row" });
       if (item.chargeLabel) titleRow.append(el("span", { className: "bdf-charge-badge", text: item.chargeLabel }));
-      titleRow.append(el("div", { className: "bdf-title", text: displayTitle }));
+      titleRow.append(dynamicHref
+        ? el("a", { className: "bdf-title bdf-title-link", href: dynamicHref, target: "_blank", rel: "noopener", text: displayTitle, title: "打开原动态" })
+        : el("div", { className: "bdf-title", text: displayTitle }));
       card.append(titleRow);
       if (validPreview && item.preview !== displayTitle) card.append(el("div", { className: "bdf-preview", text: item.preview }));
       const links = el("div", { className: "bdf-result-links" });
-      if (item.dynamicHref) links.append(el("a", { href: item.dynamicHref, target: "_blank", rel: "noopener", text: "打开动态 →" }));
-      if (item.contentHref && item.contentHref !== item.dynamicHref) {
-        links.append(el("a", { href: item.contentHref, target: "_blank", rel: "noopener", text: item.isVideo ? "打开视频 →" : "打开内容 →" }));
+      if (dynamicHref) links.append(el("a", { href: dynamicHref, target: "_blank", rel: "noopener", text: "打开动态 →" }));
+      if (contentHref && contentHref !== dynamicHref) {
+        links.append(el("a", { href: contentHref, target: "_blank", rel: "noopener", text: item.isVideo ? "打开视频 →" : "打开内容 →" }));
       }
       if (item.isVideo && !safeImage) links.append(createWatchLaterControl(item, false));
-      if (!item.dynamicHref && liveCards.has(item.key)) {
+      if (!dynamicHref && liveCards.has(item.key)) {
         const locateButton = el("button", { className: "bdf-locate", type: "button", text: "定位原动态 →" });
         locateButton.addEventListener("click", () => {
           const sourceCard = liveCards.get(item.key);
@@ -1263,6 +1569,7 @@
 
   async function loadSelectedDay() {
     if (state.running || !state.ready || !dateInput.value) return;
+    resetApiDiagnostics();
     try {
       await refreshAccount();
       render();
@@ -1275,6 +1582,7 @@
     state.unchangedRounds = 0;
     loadButton.disabled = true;
     stopButton.disabled = false;
+    syncDateNavigation();
     const target = startOfDay(`${dateInput.value}T00:00:00`).getTime();
     let previousCount = document.querySelectorAll(CARD_SELECTOR).length;
     let rounds = 0;
@@ -1286,9 +1594,9 @@
         const apiResult = await loadSelectedDayFromApi(target);
         await storageSet();
         const found = (state.cache[dateInput.value] || []).length;
-        if (state.stopRequested) setStatus(`已停止，已缓存 ${found} 条当天动态。`, "normal");
-        else if (apiResult.crossed) setStatus(`已越过目标日期；当天共缓存 ${found} 条。`, "success");
-        else setStatus(`接口已到达末尾；当天共缓存 ${found} 条。`, "normal");
+        if (state.stopRequested) setFinalLoadStatus(`已停止，已缓存 ${found} 条当天动态。`, "normal");
+        else if (apiResult.crossed) setFinalLoadStatus(`已越过目标日期；当天共缓存 ${found} 条。`, "success");
+        else setFinalLoadStatus(`接口已到达末尾；当天共缓存 ${found} 条。`, "normal");
         return;
       } catch (apiError) {
         console.warn("B站动态接口读取失败，改用页面扫描", apiError);
@@ -1326,27 +1634,36 @@
       await storageSet();
       render();
       const found = (state.cache[dateInput.value] || []).length;
-      if (state.stopRequested) setStatus(`已停止，已缓存 ${found} 条当天动态。`, "normal");
-      else if (state.unchangedRounds >= 8) setStatus(`页面不再加载；当天共缓存 ${found} 条。`, "normal");
-      else setStatus(`已越过目标日期；当天共缓存 ${found} 条。`, "success");
+      if (state.stopRequested) setFinalLoadStatus(`已停止，已缓存 ${found} 条当天动态。`, "normal");
+      else if (state.unchangedRounds >= 8) setFinalLoadStatus(`页面不再加载；当天共缓存 ${found} 条。`, "normal");
+      else setFinalLoadStatus(`已越过目标日期；当天共缓存 ${found} 条。`, "success");
     } catch (error) {
       try { await storageSet(); } catch (_) { /* Keep the original loading error. */ }
       render();
+      copyDiagnosticsButton.hidden = state.diagnostics.size === 0;
       setStatus(`加载中断：${error.message || "页面发生变化"}`, "error");
     } finally {
       state.running = false;
-      loadButton.disabled = !state.ready;
       stopButton.disabled = true;
+      syncDateNavigation();
     }
   }
 
   loadButton.addEventListener("click", loadSelectedDay);
   stopButton.addEventListener("click", () => { state.stopRequested = true; });
-  dateInput.addEventListener("change", () => {
-    setStatus("");
-    render();
-    void refreshWatchLaterStatus(true);
+  copyDiagnosticsButton.addEventListener("click", async () => {
+    try {
+      await copyText(diagnosticsText());
+      setStatus("异常信息已复制，可直接粘贴到 GitHub Issue。", "success");
+    } catch (error) {
+      setStatus(`复制失败：${error.message}`, "error");
+    }
   });
+  dateInput.addEventListener("change", () => {
+    selectDay(dateInput.value, true);
+  });
+  previousDayButton.addEventListener("click", () => selectDay(shiftDay(dateInput.value, -1), true));
+  nextDayButton.addEventListener("click", () => selectDay(shiftDay(dateInput.value, 1), true));
   filterButton.addEventListener("click", (event) => {
     event.stopPropagation();
     toggleToolMenu(filterButton, filterMenu);
@@ -1380,6 +1697,11 @@
     if (!panel.contains(event.target)) closeToolMenus();
   });
   panel.addEventListener("keydown", (event) => {
+    if (event.altKey && !event.ctrlKey && !event.metaKey && ["ArrowLeft", "ArrowRight"].includes(event.key)) {
+      event.preventDefault();
+      selectDay(shiftDay(dateInput.value, event.key === "ArrowLeft" ? -1 : 1), true);
+      return;
+    }
     if (event.key === "Escape") {
       const openButton = panel.querySelector(".bdf-tool-button[aria-expanded='true']");
       closeToolMenus();
@@ -1426,12 +1748,12 @@
       await storageSet(false);
       if (LEGACY_CACHE_KEYS.some((key) => data[key] !== undefined)) await chromeStorageRemove(LEGACY_CACHE_KEYS);
       state.ready = true;
-      loadButton.disabled = false;
+      syncDateNavigation();
       render();
       setStatus("");
     } catch (error) {
       state.ready = false;
-      loadButton.disabled = true;
+      syncDateNavigation();
       setStatus(error.message || "初始化失败", "error", true);
     } finally {
       retryButton.disabled = false;
@@ -1439,7 +1761,9 @@
   }
 
   retryButton.addEventListener("click", initialize);
+  updateCheckButton.addEventListener("click", () => void checkForUpdates(true));
   initialize();
+  void checkForUpdates(false);
 
   window.addEventListener("focus", () => void refreshWatchLaterStatus(true));
   document.addEventListener("visibilitychange", () => {

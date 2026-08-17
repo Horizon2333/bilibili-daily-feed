@@ -29,6 +29,18 @@
     return /^\d+$/.test(mid) && mid !== "0" ? mid : "";
   }
 
+  function normalizeDay(value) {
+    const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return "";
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+      ? `${match[1]}-${match[2]}-${match[3]}`
+      : "";
+  }
+
   function ensureAccount(store, profile, now) {
     const key = accountKey(profile);
     if (!key) throw new Error("无法确认当前 B 站账号");
@@ -40,6 +52,9 @@
       face: String(profile.face || current.profile?.face || "")
     };
     current.days = current.days && typeof current.days === "object" ? current.days : {};
+    const selectedDay = normalizeDay(current.lastSelectedDay);
+    if (selectedDay) current.lastSelectedDay = selectedDay;
+    else delete current.lastSelectedDay;
     delete current.coverage;
     current.lastAccessedAt = timestamp;
     store.accounts[key] = current;
@@ -118,6 +133,6 @@
 
   return {
     SCHEMA_VERSION, DEFAULT_POLICY, createStore, normalizeStore, accountKey,
-    ensureAccount, estimateBytes, mergeDays, pruneStore
+    ensureAccount, estimateBytes, mergeDays, normalizeDay, pruneStore
   };
 });

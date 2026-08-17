@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const {
-  createStore, ensureAccount, mergeDays, normalizeStore, pruneStore
+  createStore, ensureAccount, mergeDays, normalizeDay, normalizeStore, pruneStore
 } = require("../cache-store.js");
 
 const DAY = 86400000;
@@ -16,6 +16,10 @@ second.days["2026-07-21"] = [{ key: "b", pubTimestamp: now - DAY }];
 assert.notEqual(first.days, second.days, "不同 UID 必须使用不同缓存对象");
 assert.equal(store.accounts["100"].days["2026-07-21"][0].key, "a");
 assert.equal(store.accounts["200"].days["2026-07-21"][0].key, "b");
+first.lastSelectedDay = "2026-07-21";
+assert.equal(ensureAccount(store, { mid: "100", name: "账号一" }, now).lastSelectedDay, "2026-07-21");
+assert.equal(normalizeDay("2026-02-29"), "");
+assert.equal(normalizeDay("2024-02-29"), "2024-02-29");
 
 first.days["2026-01-01"] = [{ key: "expired", pubTimestamp: Date.parse("2026-01-01T12:00:00Z") }];
 first.days["2026-07-20"] = Array.from({ length: 4 }, (_, index) => ({ key: `new-${index}`, pubTimestamp: now - index }));
@@ -41,5 +45,9 @@ assert.equal(merged["2026-07-21"][0].authorMid, "12345", "重新读取时应为�
 const legacyStore = { version: 1, accounts: { "900": { days: {}, coverage: { "2026-07-21": { complete: true } }, lastAccessedAt: now } } };
 assert.doesNotThrow(() => pruneStore(legacyStore, {}, now), "旧账号缓存应平滑升级");
 assert.equal(legacyStore.accounts["900"].coverage, undefined, "升级时应清理废弃的完整度记录");
+
+const invalidSelectedDayStore = { version: 1, accounts: { "901": { days: {}, lastSelectedDay: "2026-02-30" } } };
+ensureAccount(invalidSelectedDayStore, { mid: "901" }, now);
+assert.equal(invalidSelectedDayStore.accounts["901"].lastSelectedDay, undefined, "无效续看日期不应保留");
 
 console.log("cache-store tests passed");
